@@ -38,7 +38,7 @@ class BooleanNode(object):
 		self.verbose = verbose 			# verbose mode
 
 		# Consistency
-		if (k != 0) and (k != int(np.log2(len(outputs)))):
+		if ('no_lut' not in kwargs) and (k != 0) and (k != int(np.log2(len(outputs)))):
 			raise ValueError('Number of k (inputs) do not match the number of output transitions')
 
 		# If all outputs are either positive or negative, this node can be treated as a constant.
@@ -591,8 +591,8 @@ class BooleanNode(object):
 				self._transition_density_tuple = BCanalization.make_transition_density_tables(self.k, self.outputs)
 		
 		elif 'prime_implicants' in kwargs:
-			self._check_compute_canalization_variables(transition_density_tuple=True)
 			if self._prime_implicants is None:
+				self._check_compute_canalization_variables(transition_density_tuple=True)
 				if self.verbose: print "Computing: Prime Implicants"
 				self._prime_implicants = \
 					(

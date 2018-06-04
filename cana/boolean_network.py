@@ -17,6 +17,10 @@ import numpy as np
 import networkx as nx
 import random
 import itertools
+import re
+import os
+from sympy.logic import simplify_logic
+from sympy import symbols
 from boolean_node import BooleanNode
 import bns
 from control import fvs, mds, sc
@@ -59,7 +63,7 @@ class BooleanNetwork:
 			k = len(logic[i]['in'])
 			inputs = [logic[j]['name'] for j in logic[i]['in']]
 			outputs = logic[i]['out']
-			node = BooleanNode(name=name, k=k, inputs=inputs, outputs=outputs)
+			node = BooleanNode(name=name, k=k, inputs=inputs, outputs=outputs, **kwargs)
 			self.nodes.append(node)
 
 		# 
@@ -152,6 +156,110 @@ class BooleanNetwork:
 		return cls.from_dict(logic, keep_constants=keep_constants, **kwargs)
 
 	@classmethod
+	def PI_only_from_CC_expr(cls, input_folder):
+		logic = defaultdict(dict)
+		expression_all_file, external_node_file = os.path.join(input_folder, 'expressions.ALL.txt'), os.path.join(
+			input_folder, 'external_components.ALL.txt')
+		NodeList = []
+		NodeDict = {}
+		PI_dict = {}
+		with open(expression_all_file) as expfile:
+			for line in expfile:
+				# search for "NodeName = expression" and return the NodeName
+				rem = re.match(r'^(\S+)\s*=\s*(.+)$', line)
+				if rem is None:
+					print('wrong content!')
+					return
+				NodeList.append(rem.group(1))
+
+		# case sensitive.  Hope Cell Collective data contains no bug.
+		# if there is case insensitive data, we should add upper() to this and
+		# add upper() to nodefile
+
+		for i in range(len(NodeList)):
+			NodeDict[NodeList[i]] = i
+
+		# any node beyond this mark will be external node
+		externalp = len(NodeList)
+
+		# add external nodes.  Nodes without input
+		# edit: no longer use old methods since Cell Collective has provided
+		# external nodes!
+		with open(external_node_file) as f:
+			for line in f:
+				word = line.strip()
+				NodeDict[word] = len(NodeList)
+				NodeList.append(word)
+
+		for i in range(len(NodeList)):
+			logic[i] = {'name': '', 'in': [], 'out': []}
+
+		NodeList_sorted = NodeList[:]
+		NodeList_sorted.sort(key=lambda x: len(x), reverse=True)
+
+		with open(expression_all_file) as expfile:
+			for line in expfile:
+				line = line.strip()
+				rem = re.match(r'^(\S+)\s*=\s*(.+)$', line)
+				current_nodename = rem.group(1)
+				logic[NodeDict[current_nodename]]['name'] = current_nodename
+
+				exp = rem.group(2)
+
+				# generate input node list
+				varlist = []
+				exp_copy = exp
+				for node in NodeList_sorted:
+					if node in exp_copy:
+						varlist.append(node)
+						exp_copy = exp_copy.replace(node, '')
+				logic[NodeDict[current_nodename]]['in'] = [NodeDict[i] for i in varlist]
+
+				# generate PI
+				# format original boolean expression
+				# wrap at the beginng and end to avoid subset of a string problem
+				sublist = [(varlist[i], 'v' + str(i) + 'v') for i in range(len(varlist))]
+				map_logical_op = [('AND', '&'), ('OR', '|'), ('NOT', '~')]
+				# even keywords should be sorted in the same pool
+				# or node names like 'AN' 'NO' would cause errors
+				sublist += map_logical_op
+				# it is mandatory to substitute the longer string first
+				# Sometime a shorter string is a part of a longer string
+				sublist.sort(key=lambda x: len(x[0]), reverse=True)
+				newexp = exp
+				for i, j in sublist:
+					newexp = newexp.replace(i, j)
+				SOP1_str = simplify_logic(newexp, 'dnf').__str__()
+				SOP0_str = simplify_logic('~(' + newexp + ')', 'dnf').__str__()
+
+				PI_dict[current_nodename] = [[], []]
+				for product_str in SOP1_str.split('|'):
+					PI = ['2'] * len(varlist)
+					for literal in re.findall(r'[~\w]+', product_str):
+						if literal[0] == '~':
+							PI[int(literal[2:-1])] = '0'
+						else:
+							PI[int(literal[1:-1])] = '1'
+					PI_dict[current_nodename][1].append(''.join(PI))
+				for product_str in SOP0_str.split('|'):
+					PI = ['2'] * len(varlist)
+					for literal in re.findall(r'[~\w]+', product_str):
+						if literal[0] == '~':
+							PI[int(literal[2:-1])] = '0'
+						else:
+							PI[int(literal[1:-1])] = '1'
+					PI_dict[current_nodename][0].append(''.join(PI))
+
+		for node in NodeList[externalp:]:
+			logic[NodeDict[node]]['name'] = node
+			logic[NodeDict[node]]['in'] = [NodeDict[node]]
+			PI_dict[node] = [['0'], ['1']]
+		BN = cls.from_dict(logic, no_lut=True)
+		for node in BN.nodes:
+			node._prime_implicants = PI_dict[node.name]
+		return BN
+
+	@classmethod
 	def from_dict(cls, logic, keep_constants=True, **kwargs):
 		"""Instanciaets a BoolleanNetwork from a logic dictionary.
 
@@ -178,7 +286,8 @@ class BooleanNetwork:
 				if len(nodelogic['in']) == 0:
 					constants[i] = logic[i]['out'][0]
 
-		return BooleanNetwork(name=name, logic=logic, Nnodes=Nnodes, constants=constants, keep_constants=keep_constants)
+		return BooleanNetwork(name=name, logic=logic, Nnodes=Nnodes, constants=constants, keep_constants=keep_constants, **kwargs)
+
 
 	#
 	# I/O Methods
