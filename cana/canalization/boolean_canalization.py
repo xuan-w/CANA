@@ -54,12 +54,14 @@ def make_transition_density_tables(k=1, outputs=[0,1]):
 	#
 	return transition_density_tuple
 
-def find_implicants_qm(column, verbose=False):
+def find_implicants_qm(column, verbose=False, clean = True):
 	""" Finds the prime implicants (PI) using the Quine-McCluskey algorithm :cite:`Quine:1955`.
 
 	Args:
 		column (list) : A list-of-lists containing the counts of ``1`` for each input.
 			This is given by `make_transition_density_tables`.
+		clean (bool) : if column is guaranteed to be clean, check this True. If the implicants are from other sources
+			that we cannot guarantee implicants with same density won't cover each other, make this False
 	Returns:
 		PI (set): a set of prime implicants.
 
@@ -80,6 +82,7 @@ def find_implicants_qm(column, verbose=False):
 		next_column  = [set() for _ in xrange(N+1)]
 		matches = [[False for _ in xrange(len(column[density]))] for density in xrange(N+1)]
 
+
 		# loop through the possible densities
 		for density in xrange(N):
 
@@ -91,6 +94,35 @@ def find_implicants_qm(column, verbose=False):
 					match = _adjacent(implicant, candidate)
 					if  match:
 						matches[density][i] = matches[density+1][j] = True
+						matches_density = sum([var != '0' for var in match])
+						next_column[matches_density].add(match)
+						done = False
+
+			# for external implicants, check same density too
+			if not clean:
+				for i, implicant in enumerate(column[density]):
+					for j, candidate in enumerate(column[density]):
+
+						# check if the implicants differ on only one variable
+						if j<=i:
+							continue
+						match = _adjacent(implicant, candidate)
+						if match:
+							matches[density][i] = matches[density][j] = True
+							matches_density = sum([var != '0' for var in match])
+							next_column[matches_density].add(match)
+							done = False
+		# if not clean, check the last density too
+		if not clean:
+			for i, implicant in enumerate(column[N]):
+				for j, candidate in enumerate(column[N]):
+
+					# check if the implicants differ on only one variable
+					if j <= i:
+						continue
+					match = _adjacent(implicant, candidate)
+					if match:
+						matches[N][i] = matches[N][j] = True
 						matches_density = sum([var != '0' for var in match])
 						next_column[matches_density].add(match)
 						done = False

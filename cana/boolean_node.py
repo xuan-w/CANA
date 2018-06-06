@@ -53,6 +53,7 @@ class BooleanNode(object):
 		self._two_symbols = None 				# The Two Symbol (TS) Schemata
 		self._pi_coverage = None 				# The Coverage of inputs by Prime Implicants schemata
 		self._ts_coverage = None 				# The Coverage of inputs by Two Symbol schemata
+		self._implicant_density_tuple = None    # Use implicants from input file to reduce computation, the same format as transition_density_tuple
 
 	def __str__(self):
 		if len(self.outputs) > 10 :
@@ -592,13 +593,21 @@ class BooleanNode(object):
 		
 		elif 'prime_implicants' in kwargs:
 			if self._prime_implicants is None:
-				self._check_compute_canalization_variables(transition_density_tuple=True)
-				if self.verbose: print "Computing: Prime Implicants"
-				self._prime_implicants = \
-					(
-						BCanalization.find_implicants_qm(column=self._transition_density_tuple[0]),
-						BCanalization.find_implicants_qm(column=self._transition_density_tuple[1])
-					)
+				if self._implicant_density_tuple is None:
+					self._check_compute_canalization_variables(transition_density_tuple=True)
+					if self.verbose: print "Computing: Prime Implicants"
+					self._prime_implicants = \
+						(
+							BCanalization.find_implicants_qm(column=self._transition_density_tuple[0]),
+							BCanalization.find_implicants_qm(column=self._transition_density_tuple[1])
+						)
+				else:
+					if self.verbose: print "Computing: Prime Implicants from external implicants"
+					self._prime_implicants = \
+						(
+							BCanalization.find_implicants_qm(column=self._implicant_density_tuple[0], clean=False),
+							BCanalization.find_implicants_qm(column=self._implicant_density_tuple[1], clean=False)
+						)
 
 		elif 'pi_coverage' in kwargs:
 			self._check_compute_canalization_variables(prime_implicants=True)
