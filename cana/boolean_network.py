@@ -156,7 +156,7 @@ class BooleanNetwork:
 		return cls.from_dict(logic, keep_constants=keep_constants, **kwargs)
 
 	@classmethod
-	def from_cnet_and_expr(cls, input_folder, keep_constants=True, **kwargs):
+	def from_cnet_and_expr(cls, input_folder, keep_constants=True, verbose=False, **kwargs):
 		for input_file in os.listdir(input_folder):
 			if os.path.splitext(input_file)[-1] == '.cnet':
 				break
@@ -178,7 +178,8 @@ class BooleanNetwork:
 				rem = re.match(r'^(\S+)\s*=\s*(.+)$', line)
 				current_nodename = rem.group(1)
 
-				print(rem.group(1))
+				if verbose:
+					print(rem.group(1))
 				exp = rem.group(2)
 
 				# generate input node list
