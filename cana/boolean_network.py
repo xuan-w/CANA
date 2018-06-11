@@ -204,15 +204,33 @@ class BooleanNetwork:
 
 				implicant_dict[current_nodename] = [[], []]
 				def implicants_from_SOP_str(SOP_str):
+					# if the expression is tautology or contradiction, sympy may return True or False
+					if SOP_str == 'True':
+						return [''.join(['2'] * len(input_map))]
+					if SOP_str == 'False':
+						return []
 					implicant_list = []
 					for product_str in SOP_str.split('|'):
 						implicant = ['2'] * len(input_map)
+						contradiction = False
 						for literal in re.findall(r'[~\w]+', product_str):
 							if literal[0] == '~':
-								implicant[int(literal[2:-1])] = '0'
+								# it is already recorded as different value, then it is a contradiction
+								if implicant[int(literal[2:-1])] != '1':
+									implicant[int(literal[2:-1])] = '0'
+								else:
+									contradiction = True
+									break
 							else:
-								implicant[int(literal[1:-1])] = '1'
-						implicant_list.append(''.join(implicant))
+								# same as above, check for contradiction
+								if implicant[int(literal[1:-1])] != '0':
+									implicant[int(literal[1:-1])] = '1'
+								else:
+									contradiction = True
+									break
+						# if it is a contradiction, don't add this half made implicant
+						if not contradiction:
+							implicant_list.append(''.join(implicant))
 					return implicant_list
 				implicant_dict[current_nodename][1] =  implicants_from_SOP_str(SOP1_str)
 				implicant_dict[current_nodename][0] =  implicants_from_SOP_str(SOP0_str)
