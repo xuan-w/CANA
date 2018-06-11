@@ -278,6 +278,7 @@ class BooleanNetwork:
 		constants = {}
 		if 'name' in kwargs:
 			name = kwargs['name']
+			kwargs.pop('name')
 		else:
 			name = ''
 		if keep_constants:
