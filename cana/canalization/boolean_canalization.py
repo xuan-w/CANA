@@ -795,26 +795,29 @@ def __ts_covers(two_symbol, permut_indexes, input, verbose=False):
 			return True
 	# There are permutations to generate and check
 	else:
-		# NEW METHOD: Generates the expanded logic of the Two-Symbol Schema
-		for gen_implicant in _expand_ts_logic(two_symbol, permut_indexes):
-			if __pi_covers(gen_implicant, input):
-				return True
-		"""
-		# OLD METHOD
-		for idxs in permut_indexes:
-			# Extract the charactes that can be permuted
-			chars = [implicant[idx] for idx in idxs]
-			# Generate all possible permutations of these symbols
-			permut_chars = itertools.permutations(chars, len(idxs))
-			for permut_chars in permut_chars:
-				# Generate a new implicant and substitute the charactes with the permuted ones
-				tmp = list(implicant)
-				for idx,char in zip(idxs,permut_chars):
-					tmp[idx] = char
-				# The new permuted implicate is covered?
-				if __pi_covers(tmp, input):
-					return True
-		"""
+		# new new method
+		# just count number of 1s and 0s
+		k = len(input)
+		for permut_group in permut_indexes:
+			ts_1s = 0
+			ts_0s = 0
+			bs_1s = 0
+			bs_0s = 0
+			for index in permut_group:
+				if two_symbol[index] == '0':
+					ts_0s += 1
+				elif two_symbol[index] == '1':
+					ts_1s += 1
+				if input[index] == '0':
+					bs_0s += 1
+				elif input[index] == '1':
+					bs_1s += 1
+			if bs_0s < ts_0s or bs_0s > (k-ts_1s):
+				return False
+			if bs_1s < ts_1s or bs_1s > (k-ts_0s):
+				return False
+		return True
+
 	return False
 
 def computes_ts_coverage(k, outputs, two_symbols):
