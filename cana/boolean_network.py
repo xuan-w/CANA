@@ -252,6 +252,7 @@ class BooleanNetwork:
 			density_tuple = [ [ list(density_set) for density_set in density_tuple[i] ] for i in [0,1] ]
 			return density_tuple
 		for node in BN.nodes:
+			node._implicants = implicant_dict[node.name]
 			node._implicant_density_tuple = make_density_tuple(implicant_dict[node.name])
 		return BN
 

@@ -21,6 +21,7 @@ from canalization import boolean_canalization as BCanalization
 from base import deprecated
 import warnings
 from utils import *
+import espresso
 #
 #
 #
@@ -54,6 +55,7 @@ class BooleanNode(object):
 		self._pi_coverage = None 				# The Coverage of inputs by Prime Implicants schemata
 		self._ts_coverage = None 				# The Coverage of inputs by Two Symbol schemata
 		self._implicant_density_tuple = None    # Use implicants from input file to reduce computation, the same format as transition_density_tuple
+		self._implicants = None                 # similar to _prime_implicants, just not prime. we can feed this to espresso
 
 	def __str__(self):
 		if len(self.outputs) > 10 :
@@ -81,7 +83,7 @@ class BooleanNode(object):
 
 		return BooleanNode(name=name, k=k, inputs=inputs, state=state, outputs=outputs, *args, **kwargs)
 
-	def input_redundancy(self, mode='node', bound='upper', norm=True):
+	def input_redundancy(self, mode='node', bound='upper', norm=True , method='default'):
 		r""" The Input Redundancy :math:`k_{r}` is the mean number of unnecessary inputs (or ``#``) in the Prime Implicants Look Up Table (LUT).
 		Since there may be more than one redescription schema for each input entry, the input redundancy is bounded by an upper and lower limit.
 		It can also be computed per input :math:`r_i`.
@@ -106,7 +108,10 @@ class BooleanNode(object):
 			norm (bool) : Normalized between [0,1].
 				Use this value when comparing nodes with different input sizes. (Defaults to "True".)
 
-				:math:`k^{*}_r(x) = \frac{ k_r(x) }{ k(x) }`. 
+				:math:`k^{*}_r(x) = \frac{ k_r(x) }{ k(x) }`.
+			method (string) : select for different method
+				Method "default": python exact method
+				Method "espresso-exact": use espresso to calculate exact prime implicants set
 
 
 		Returns:
@@ -127,8 +132,10 @@ class BooleanNode(object):
 			else:
 				raise AttributeError('The mode you selected does not exist. Try "node" or "input".')
 
-		self._check_compute_canalization_variables(pi_coverage=True)
-
+		if method == 'default':
+			self._check_compute_canalization_variables(pi_coverage=True)
+		elif method == 'espresso-exact':
+			self._check_compute_canalization_variables(pi_coverage=True, espresso='exact')
 		# Per Node
 		if mode == 'node':
 
@@ -593,6 +600,17 @@ class BooleanNode(object):
 		
 		elif 'prime_implicants' in kwargs:
 			if self._prime_implicants is None:
+				if 'espresso' in kwargs:
+					if self._implicants is None:
+						print("this part hasn't been implemented")
+						raise Exception
+					else:
+						self._prime_implicants = \
+							(
+								espresso.exact_prime_implicants(self._implicants[0]),
+								espresso.exact_prime_implicants(self._implicants[1])
+							)
+					pass
 				if self._implicant_density_tuple is None:
 					self._check_compute_canalization_variables(transition_density_tuple=True)
 					if self.verbose: print "Computing: Prime Implicants"
@@ -610,13 +628,19 @@ class BooleanNode(object):
 						)
 
 		elif 'pi_coverage' in kwargs:
-			self._check_compute_canalization_variables(prime_implicants=True)
+			if 'espresso' in kwargs:
+				self._check_compute_canalization_variables(prime_implicants=True, espresso=kwargs['espresso'])
+			else:
+				self._check_compute_canalization_variables(prime_implicants=True)
 			if self._pi_coverage is None:
 				if self.verbose: print "Computing: Coverage of Prime Implicants"
 				self._pi_coverage = BCanalization.computes_pi_coverage(self.k, self.outputs, self._prime_implicants)
 
 		elif 'two_symbols' in kwargs:
-			self._check_compute_canalization_variables(prime_implicants=True)
+			if espresso in kwargs:
+				self._check_compute_canalization_variables(prime_implicants=True, espresso=espresso)
+			else:
+				self._check_compute_canalization_variables(prime_implicants=True)
 			if self._two_symbols is None:
 				if self.verbose: print "Computing: Two Symbols"
 				self._two_symbols = \
