@@ -602,8 +602,17 @@ class BooleanNode(object):
 			if self._prime_implicants is None:
 				if 'espresso' in kwargs:
 					if self._implicants is None:
-						print("this part hasn't been implemented")
-						raise Exception
+						lut_0, lut_1 = [],[]
+						for statenum in xrange(2**self.k):
+							if self.outputs[statenum] == 0:
+								lut_0.append(statenum_to_binstate(statenum,self.k))
+							else:
+								lut_1.append(statenum_to_binstate(statenum,self.k))
+						self._prime_implicants = \
+							{
+								espresso.exact_prime_implicants(lut_0),
+								espresso.exact_prime_implicants(lut_1)
+							}
 					else:
 						self._prime_implicants = \
 							(
