@@ -687,3 +687,19 @@ class BooleanNode(object):
 								''.join(mut_config)):
 							S_c_f += ncr(max_k - self.k, c - ic)
 			return S_c_f / float(ncr(max_k, c)) / float(2 ** self.k)
+
+	def activities(self, N):
+		'''
+
+		:return: a list of activity for every input node
+		'''
+		activity_count = [0] * self.k
+		for j in product('01', repeat=self.k):
+			origin_config = list(j)
+			for mut in range(self.k):
+				mut_config = origin_config[:]
+				mut_config[mut] = flip_bit(mut_config[mut])
+				if self.step(''.join(origin_config)) != self.step(
+						''.join(mut_config)):
+					activity_count[mut] += 1
+		return [i / 2 ** self.k for i in activity_count]

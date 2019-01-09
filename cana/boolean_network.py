@@ -16,6 +16,7 @@ try:
     import cStringIO.StringIO
 except ImportError:
     from io import StringIO
+import os
 
 import numpy as np
 import networkx as nx
@@ -26,6 +27,7 @@ import cana.bns as bns
 from cana.control import fvs, mds, sc
 from cana.utils import *
 import warnings
+from math import log2,ceil
 #
 #
 class BooleanNetwork:
@@ -91,7 +93,7 @@ class BooleanNetwork:
 		See also:
 			:func:`from_string` :func:`from_dict`
 		"""
-		with open(input_file, 'r') as infile:
+		with open(input_file, 'r', encoding='utf-8') as infile:
 			return cls.from_string(infile.read(), keep_constants=keep_constants, **kwargs)
 
 	@classmethod
@@ -592,6 +594,59 @@ class BooleanNetwork:
 
 		return attractor_controllers_found
 
+	def full_control_driver_nodes(self, min_dvs=1, max_dvs=4, verbose=False, poolsize = 0, taskid = 0):
+		"""Get the minimum necessary driver nodes by iterating the combination of all possible driver nodes of length :math:`min <= x <= max`.
+
+		Args:
+			min_dvs (int) : Mininum number of driver nodes to search.
+			max_dvs (int) : Maximum number of driver nodes to search.
+		Returns:
+			(list) : The list of driver nodes found in the search.
+		Note:
+			This is an inefficient bruit force search, maybe we can think of better ways to do this?
+		TODO:
+			Parallelize the search on each combination. Each CSTG is independent and can be searched in parallel.
+		See also:
+			:func:`controlled_state_transition_graph`, :func:`controlled_attractor_graph`.
+		"""
+		nodeids = list(range(self.Nnodes))
+		if self.keep_constants:
+			for cv in self.constants.keys():
+				nodeids.remove(cv)
+
+		attractor_controllers_found = []
+		nr_dvs = min_dvs
+		count = 0
+		def write_dvs(dvs):
+			with open('dvs.log','a') as logfile:
+				logfile.write(repr(dvs)+'\n')
+
+		exist_file = False
+		while (len(attractor_controllers_found) == 0) and (nr_dvs <= max_dvs) and (not exist_file):
+			if verbose:
+				print("Trying with %d Driver Nodes" % (nr_dvs))
+			if os.path.isfile('dvs.log'):
+				exist_file = True
+			for dvs in itertools.combinations(nodeids, nr_dvs):
+				count += 1
+				if poolsize != 0:
+					if count % poolsize != taskid:
+						continue
+				dvs = list(dvs)
+				cstg = self.controlled_state_transition_graph(dvs)
+				conf_reachable_from = self.mean_reachable_configurations(cstg)
+
+				if conf_reachable_from == 1:
+					attractor_controllers_found.append(dvs)
+					write_dvs(dvs)
+			# Add another driver node
+			nr_dvs += 1
+
+		if len(attractor_controllers_found) == 0:
+			warnings.warn("No attractor control driver variable sets found after exploring all subsets of size {:,d} to {:,d} nodes!!".format(min_dvs, max_dvs))
+
+		return attractor_controllers_found
+
 
 	def controlled_state_transition_graph(self, driver_nodes=[]):
 		"""Returns the Controlled State-Transition-Graph (CSTG).
@@ -627,7 +682,7 @@ class BooleanNetwork:
 
 		return cstg
 
-	def pinned_step(self, initial, pinned_binstate, pinned_var):
+	def pinned_step(self, initial, pinned_var):
 		""" Steps the boolean network 1 step from the given initial input condition when the driver variables are pinned
 		to their controlled states.
 		Args:
@@ -644,6 +699,15 @@ class BooleanNetwork:
 		assert len(initial) == self.Nnodes
 
 		return ''.join( [ str(node.step( ''.join(initial[j] for j in self.logic[i]['in']) ) ) if not (i in pinned_var) else initial[i] for i,node in enumerate(self.nodes, start=0) ] )
+
+	def pin_selected_nodes(self, initial, pinned_binstate, pinned_var):
+		if len(pinned_binstate) != len(pinned_var):
+			print('error! Unmatched arguments in pin_selected_nodes()')
+			return initial
+		copy_initial = [i for i in initial]
+		for i, var in enumerate(pinned_var):
+			copy_initial[var] = pinned_binstate[i]
+		return ''.join(copy_initial)
 
 	def pinning_controlled_state_transition_graph(self, driver_nodes=[]):
 		"""Returns a dictionary of Controlled State-Transition-Graph (CSTG) under the assumptions of
@@ -683,7 +747,9 @@ class BooleanNetwork:
 			for attsource, attsink in dn_attractor_transitions:
 				for statenum in range(2**uncontrolled_system_size):
 					initial = binstate_pinned_to_binstate(statenum_to_binstate(statenum, base=uncontrolled_system_size), attsource, pinned_var=driver_nodes)
-					pcstg.add_edge(self.bin2num(initial), self.bin2num(self.pinned_step(initial, pinned_binstate=attsink, pinned_var=driver_nodes)))
+					next_step = self.pin_selected_nodes(self.pinned_step(initial, pinned_var=driver_nodes), pinned_binstate=attsink, pinned_var=driver_nodes)
+					# next_step = self.pinned_step(initial, pinned_var=driver_nodes)
+					pcstg.add_edge(self.bin2num(initial), self.bin2num(next_step))
 
 			pcstg_dict[tuple(att)] = pcstg
 
@@ -716,6 +782,63 @@ class BooleanNetwork:
 					cag.add_edge(j, i)
 		return cag
 
+	def pinning_control_nodes(self):
+		self._check_compute_variables(attractors=True)
+		if len(self._attractors) == 1:
+			return []
+		min_pn_N = ceil(log2(len(self._attractors)))
+		nodeids = list(range(self.Nnodes))
+
+		bin_attractors = [[self.num2bin(state) for state in attr] for attr in self._attractors]
+
+		def check_nodes_neccesary(nodes, attractors):
+			if len(nodes) == 0:
+				return False
+			none_overlap_set = set()
+			remaining_attractors = []
+			for attr in attractors:
+				if len(attr) == 1:
+					node_stat = tuple(attr[0][node] for node in nodes)
+				else:
+					# else, if the nodes value are all the same for the limit cycle, add it too
+					node_stat = tuple(attr[0][node] for node in nodes)
+					jump = False
+					for a_i in range(1, len(attr)):
+						current_node_stat = tuple(attr[a_i][node] for node in nodes)
+						if current_node_stat != node_stat:
+							jump = True
+							break
+					if jump:
+						remaining_attractors.append(attr)
+						continue
+				if node_stat not in none_overlap_set:
+					none_overlap_set.add(node_stat)
+				else:
+					return False
+			for attr in remaining_attractors:
+				for state in attr:
+					node_stat = tuple(state[node] for node in nodes)
+					if node_stat in none_overlap_set:
+						return False
+			return True
+
+		result = []
+		for n_pin in range(min_pn_N, self.Nnodes):
+			if len(result) > 0:
+				break
+			for pvs in itertools.combinations(nodeids, n_pin):
+				if check_nodes_neccesary(pvs, bin_attractors):
+					controlled = True
+					for attr, pcstg in self.pinning_controlled_state_transition_graph(pvs).items():
+						if len([1 for i in nx.weakly_connected_components(pcstg)]) > 1:
+							controlled = False
+							break
+					if controlled:
+						result.append(pvs)
+		if len(result) == 0:
+			return [list(range(self.Nnodes))]
+		return result
+
 	def mean_reachable_configurations(self, cstg):
 		"""Returns the Mean Fraction of Reachable Configurations
 
@@ -731,6 +854,8 @@ class BooleanNetwork:
 			reachable_from.append(control_reach)
 
 		norm = (2.0**self.Nnodes - 1.0) * len(reachable_from)
+		if reachable_from == norm:
+			return 1
 		reachable_from = sum(reachable_from) / (norm)
 
 		return reachable_from
@@ -778,6 +903,7 @@ class BooleanNetwork:
 
 		return att_reachable_from
 
+
 	def fraction_pinned_attractors(self, pcstg_dict):
 		"""Returns the Number of Accessible Attractors
 
@@ -788,9 +914,13 @@ class BooleanNetwork:
 		"""
 
 		reached_attractors = []
+		att_set = [set(i) for i in pcstg_dict]
 		for att, pcstg in pcstg_dict.items():
 			pinned_att = list(nx.attracting_components(pcstg))
 			print(set(att), pinned_att)
+			for patt in pinned_att:
+				if patt not in att_set:
+					print('warning: new att! %s' % patt)
 			reached_attractors.append(set(att) in pinned_att)
 
 		return sum(reached_attractors) / float(len(pcstg_dict))
@@ -1061,5 +1191,23 @@ class BooleanNetwork:
 
 		return dx, dy
 
+	def activity_graph(self, threshold=None):
+		if threshold is not None:
+			act_g = nx.DiGraph(name="activity Graph: " + self.name + "(Threshold: %.2f)" % threshold)
+		else:
+			act_g = nx.DiGraph(name="activity Graph: " + self.name + "(Threshold: None)")
 
+		# Add Nodes
+		for i, node in enumerate(self.nodes, start=0):
+			act_g.add_node(i, **{'label': node.name})
 
+		# Add Edges
+		for i, node in enumerate(self.nodes, start=0):
+
+			a_is = node.activities(self.Nnodes)
+			for inputs, a_i in zip(self.logic[i]['in'], a_is):
+				# If there is a threshold, only return those number above the threshold. Else, return all edges.
+				if ((threshold is None) and (a_i > 0)) or ((threshold is not None) and (a_i > threshold)):
+					act_g.add_edge(inputs, i, **{'weight': a_i})
+
+		return act_g
