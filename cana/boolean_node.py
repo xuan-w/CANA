@@ -187,7 +187,7 @@ class BooleanNode(object):
 		else:
 			raise AttributeError('The mode you selected does not exist. Try "node" or "input".')
 
-	def effective_connectivity(self, mode='node', bound='upper', norm=True):
+	def effective_connectivity(self, mode='node', bound='upper', norm=True, method='default'):
 		r"""The Effective Connectiviy is the mean number of input nodes needed to determine the transition of the node.
 
 		.. math::
@@ -224,14 +224,14 @@ class BooleanNode(object):
 
 		if mode == 'node':
 			
-			k_r = self.input_redundancy(mode=mode, bound=bound, norm=False)
+			k_r = self.input_redundancy(mode=mode, bound=bound, norm=False, method=method)
 			k_e = self.k - k_r
 			if (norm):
 				k_e = k_e / self.k
 			return k_e
 
 		elif mode == 'input':
-			e_i = [1 - x_i for x_i in self.input_redundancy(mode=mode, bound=bound, norm=False)]
+			e_i = [1 - x_i for x_i in self.input_redundancy(mode=mode, bound=bound, norm=False, method=method)]
 			return e_i
 		else:
 			raise AttributeError('The mode you selected does not exist. Try "node" or "input".')
