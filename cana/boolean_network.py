@@ -98,7 +98,7 @@ class BooleanNetwork:
         See also:
             :func:`from_string` :func:`from_dict`
         """
-        with open(file, 'r') as infile:
+        with open(file, 'r', encoding='utf-8') as infile:
             if type == 'cnet':
                 return self.from_string_cnet(infile.read(), keep_constants=keep_constants, **kwargs)
             elif type == 'logical':
@@ -500,6 +500,54 @@ class BooleanNetwork:
         dict_all_conditioned_nodes = {n: all_conditioned_nodes.get(n, None) for n in conditional_eg.nodes()}
         nx.set_node_attributes(conditional_eg, values=dict_all_conditioned_nodes, name='conditioned_state')
 
+        return conditional_eg
+
+    def update_biased_boolean_network(self):
+        for i, node in enumerate(self.nodes):
+            new_bias = node.bias_from_bias_input()
+            for target in self._sg[i]:
+                target_node = self.nodes[target]
+                target_idx = target_node.inputs.index(i)
+                target_node._input_bias[target_idx] = new_bias
+        for node in self.nodes:
+            node.add_biased_input(None)
+
+    def biased_effective_graph(self, max_iter = 10000, bound='mean', threshold=None):
+        """Computes and returns the BN effective graph conditioned on some known states.
+
+        Args:
+            conditioned_nodes (dict) : a dictionary mapping node ids to their conditioned states.
+                dict of form { nodeid : nodestate }
+            bound (string) : The bound to which compute input redundancy.
+                Can be one of : ["lower", "mean", "upper", "tuple"].
+                Defaults to "mean".
+            threshold (float) : Only return edges above a certain effective connectivity threshold.
+                This is usefull when computing graph measures at diffent levels.
+
+        Returns:
+            (networkx.DiGraph) : directed graph
+
+        See Also:
+            :func:`~cana.boolean_network.BooleanNetwork.effective_graph`
+        """
+
+        conditional_eg = copy.deepcopy(self.effective_graph(bound=bound, threshold=threshold))
+
+        if max_iter > 0:
+            # set initial condition
+            for node in self.nodes:
+                node.add_biased_input([0.5]*node.k)
+            self.structural_graph()
+            for i in range(max_iter):
+                self.update_biased_boolean_network()
+
+        # Add Edges
+        for i, node in enumerate(self.nodes, start=0):
+            e_is = node.edge_effectiveness(biased=True, bound=bound)
+            for inputs, e_i in zip(self.logic[i]['in'], e_is):
+                # If there is a threshold, only return those number above the threshold. Else, return all edges.
+                if (threshold is None) or ((threshold is not None) and (e_i > threshold)):
+                    conditional_eg.add_edge(inputs, i, **{'weight': e_i})
         return conditional_eg
 
     def effective_indegrees(self):
@@ -1214,7 +1262,8 @@ class BooleanNetwork:
 
         return partial
 
-    def approx_dynamic_impact(self, source, n_steps=1, target_set=None, bound='mean', threshold=0.0):
+    def approx_dynamic_impact(self, source, n_steps=1, target_set=None, bound='mean', threshold=0.0, biased=False,
+                              b_iter=2):
         """Use the network structure to approximate the dynamical impact of a perturbation to node for each of n_steps
         for details see: Gates et al (2020).
 
@@ -1244,8 +1293,10 @@ class BooleanNetwork:
         def inv_eff_weight_func(pathlength):
             return np.exp(-pathlength)
 
-
-        impact_matrix = np.zeros((2, n_steps + 1, len(target_set)))
+        if biased:
+            impact_matrix = np.zeros((3, n_steps + 1, len(target_set)))
+        else:
+            impact_matrix = np.zeros((2, n_steps + 1, len(target_set)))
         impact_matrix[0, :, :] = self.Nnodes + 1  # if we can't reach the node, then the paths cant be longer than the number of nodes in the graph
         # note that by default: impact_matrix[1, :, :] = 0 the minimum path for nodes we cant reach in the effective graph
 
@@ -1253,9 +1304,21 @@ class BooleanNetwork:
         Gstr_shortest_dist, Gstr_shortest_paths = nx.single_source_dijkstra(Gstr, source, target=None, cutoff=n_steps)
         Gstr_shortest_dist = {n: int(l) for n, l in Gstr_shortest_dist.items()}
 
-        # in the effective graph, calcluate the dijkstra shortest paths from the source to all targets that are shorter than the cufoff
-        # where the edge weight is given by the effective weight function
-        Geff_shortest_dist, Geff_shortest_paths = nx.single_source_dijkstra(Geff, source, target=None, cutoff=n_steps, weight=eff_weight_func)
+        def light_cone(G, source):
+            LC_list = [set(source)]
+            increment = set(source)
+            current_set = set(source)
+            while len(current_set) < len(G) and len(increment) > 0:
+                new_set = set(current_set)
+                for node in increment:
+                    new_set |= set(G[node])
+                increment = new_set - current_set
+                LC_list.append(new_set)
+                current_set = new_set
+            return LC_list
+
+        LC_eff = light_cone(Geff, [source])
+
 
         for itar, target in enumerate(target_set):
 
@@ -1266,39 +1329,60 @@ class BooleanNetwork:
                 # the light cone is at least as big as the number of edges in the structural shorest path
                 impact_matrix[0, list(range(Gstr_shortest_dist[target], n_steps + 1)), itar] = Gstr_shortest_dist[target]
 
-                # if the path exists, then the number of edges (timesteps) is one less than the number of nodes
-                if not Geff_shortest_paths.get(target, None) is None:
-                    eff_path_steps = len(Geff_shortest_paths[target]) - 1
+        for istep in range(1, min(len(LC_eff), n_steps+1)):
+            sub_eg = Geff.subgraph(LC_eff[istep])
+            Geff_shortest_dist, Geff_shortest_paths = nx.single_source_dijkstra(sub_eg, source, target=None, weight=eff_weight_func)
+            for itar, target in enumerate(target_set):
+                if target != source and not Geff_shortest_dist.get(target, None) is None:
+                    impact_matrix[1, istep, itar] = inv_eff_weight_func(Geff_shortest_dist[target])
+        if n_steps+1>len(LC_eff):
+            for istep in range( len(LC_eff), n_steps+1):
+                for itar, target in enumerate(target_set):
+                    if target != source and not Geff_shortest_dist.get(target, None) is None:
+                        impact_matrix[1, istep, itar] = inv_eff_weight_func(Geff_shortest_dist[target])
+        if biased:
+            plan = 2
+            if plan == 1 or plan == 3:
+                # set initial condition
+                for node in self.nodes:
+                    node.add_biased_input([0.5] * node.k)
+
+                # set batch of nodes to be updated, source is already updated, then every adjacent nodes to source on EG
+                # Then propagate
+                if plan == 1:
+                    LC_copy = LC_eff
                 else:
-                    # or the path doesnt exist
-                    eff_path_steps = n_steps + 100 # any number bigger than the longest path to represent we cannot reach the node
+                    LC_copy = light_cone(Geff, [source] + self.input_nodes)
+                node_batch = []
+                for istep in range(1, len(LC_copy)):
+                    node_batch.append(list(LC_copy[istep] - LC_copy[istep - 1]))
+                # for step in range(n_steps):
+                #     node_batch.append(np.where((impact_matrix[1][step + 1] > 0) & ~ (impact_matrix[1][step] > 0)))
+                for batch in node_batch:
+                    for i_node in batch:
+                        node = self.nodes[i_node]
+                        new_bias = node.bias_from_bias_input()
+                        for target in self._sg[i_node]:
+                            target_node = self.nodes[target]
+                            target_idx = target_node.inputs.index(i_node)
+                            target_node._input_bias[target_idx] = new_bias
+                Gbias = self.biased_effective_graph(max_iter=0, bound=bound, threshold=threshold)
+            elif plan == 2:
+                Gbias = self.biased_effective_graph(max_iter=b_iter, bound=bound, threshold=threshold)
 
+            for istep in range(1, min(len(LC_eff), n_steps + 1)):
+                sub_eg = Gbias.subgraph(LC_eff[istep])
+                Gbias_shortest_dist, Gbias_shortest_paths = nx.single_source_dijkstra(sub_eg, source, target=None,
+                                                                                    weight=eff_weight_func)
+                for itar, target in enumerate(target_set):
+                    if target != source and not Gbias_shortest_dist.get(target, None) is None:
+                        impact_matrix[2, istep, itar] = inv_eff_weight_func(Gbias_shortest_dist[target])
+            if n_steps + 1 > len(LC_eff):
+                for istep in range(len(LC_eff), n_steps + 1):
+                    for itar, target in enumerate(target_set):
+                        if target != source and not Gbias_shortest_dist.get(target, None) is None:
+                            impact_matrix[2, istep, itar] = inv_eff_weight_func(Gbias_shortest_dist[target])
 
-                # start by checking if the number of timesteps is less than the maximum allowable number of steps
-                if eff_path_steps <= n_steps:
-
-                    # now check if the most likely effective path is longer (in terms of # of timesteps) than the structural shortest path
-                    if eff_path_steps > Gstr_shortest_dist[target]:
-
-                        # if it is, then we need to find another effective path constrained by the light-cone
-                        # for all time steps where the most likely effective path is longer (in terms of # of timesteps)
-                        # than the structural shortest path
-                        for istep in range(Gstr_shortest_dist[target], eff_path_steps):
-
-                            # bc the effective graph has fully redundant edges, there may actually not be a path
-                            try:
-                                redo_dijkstra_dist, _ = nx.single_source_dijkstra(Geff,
-                                    source=source,
-                                    target=target,
-                                    cutoff=istep,
-                                    weight=eff_weight_func)
-                                impact_matrix[1, istep, itar] = inv_eff_weight_func(redo_dijkstra_dist)
-                            except nx.NetworkXNoPath:
-                                pass
-
-                    # once the lightcone includes the target node on the effective shortest path,
-                    # then for all other steps the effective path is the best
-                    impact_matrix[1, list(range(eff_path_steps, n_steps + 1)), itar] = inv_eff_weight_func(Geff_shortest_dist[target])
 
         return impact_matrix[:, 1:]
 

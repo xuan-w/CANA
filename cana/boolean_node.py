@@ -15,6 +15,7 @@ Main class for Boolean node objects.
 from __future__ import division
 import numpy as np
 import pandas as pd
+from numpy import prod
 from statistics import mean
 from itertools import compress, combinations
 from cana.canalization import boolean_canalization as BCanalization
@@ -60,6 +61,9 @@ class BooleanNode(object):
         self._two_symbols = None                # The Two Symbol (TS) Schemata
         self._pi_coverage = None                # The Coverage of inputs by Prime Implicants schemata
         self._ts_coverage = None                # The Coverage of inputs by Two Symbol schemata
+        self._input_bias = None                 # a vector representing the input bias, [0,1]
+        self._mu_bias = None                    # mu, probability for each row in outputs
+        self.__mu_updated = False
 
     def __str__(self):
         if len(self.outputs) > 10:
@@ -192,6 +196,65 @@ class BooleanNode(object):
 
         return redundancies  # r_i
 
+    def edge_redundancy_bias_input(self, bound='mean'):
+        r""" The Edge Redundancy :math:`r_{i}` is the mean number of unnecessary inputs (or ``#``) in the Prime Implicants Look Up Table (LUT) for that input.
+        Since there may be more than one redescription schema for each input entry, the input redundancy is bounded by an upper and lower limit.
+
+        .. math::
+
+            r_i(x_i) = \frac{ \sum_{f_{\alpha} \in F} \Phi_{\theta:f_{\alpha} \in \Theta_{\theta}} (X^{\#}_{\theta_i} ) }{ |F| }
+
+        where :math:`\Phi` is a function (:math:`min` or :math:`max`) and :math:`F` is the node LUT.
+
+        Args:
+            bound (string) : The bound to which compute input redundancy.
+                Mode "input" accepts: ["lower", "mean", "ave", upper", "tuple"].
+                Defaults to "mean".
+
+        Returns:
+            (list) : The list of :math:`r_i` for inputs.
+
+        Note:
+            The complete mathematical description can be found in :cite:Gates:2020`.
+
+        See also:
+            :func:`effective_connectivity`, :func:`input_symmetry`.
+        """
+        if not self.__mu_updated:
+            self._calc_mu_bias()
+        self._check_compute_canalization_variables(pi_coverage=True)
+
+        redundancies = []
+        # Generate a per input coverage
+        # ex: {0: {'11': [], '10': [], '00': [], '01': []}, 1: {'11': [], '10': [], '00': [], '01': []}}
+        # pi_edge_coverage = { input : { binstate: [ pi[input] for pi in pis ] for binstate,pis in self._pi_coverage.items() } for input in range(self.k) }
+        pi_edge_coverage = cBCanalization.input_wildcard_coverage(self._pi_coverage)
+        # Loop ever input node
+        for edge, binstates2wildcard in pi_edge_coverage.items():
+            # {'numstate': [matches], '10': [True,False,True,...] ...}
+
+            # countslenghts = {binstate_to_statenum(binstate): ([pi=='#' for pi in pis]) for binstate,pis in binstates.items() }
+            # A triplet of (min, mean, max) values
+            if bound == 'lower':
+                redundancy = sum([all(pi) * self._mu_bias[binstate_to_statenum(binstate)] for binstate, pi in
+                                  binstates2wildcard.items()])  # min(r_i)
+            elif bound == 'mean' or bound == 'avg':
+                redundancy = sum([sum(pi) / len(pi) * self._mu_bias[binstate_to_statenum(binstate)] for binstate, pi in
+                                  binstates2wildcard.items()])  # <r_i>
+            elif bound == 'upper':
+                redundancy = sum([any(pi) * self._mu_bias[binstate_to_statenum(binstate)] for binstate, pi in
+                                  binstates2wildcard.items()])  # max(r_i)
+            elif bound == 'tuple':
+                redundancy = (sum([all(pi) * self._mu_bias[binstate_to_statenum(binstate)] for binstate, pi in
+                                   binstates2wildcard.items()]), sum(
+                    [any(pi) * self._mu_bias[binstate_to_statenum(binstate)] for binstate, pi in
+                     binstates2wildcard.items()]))  # (min,max)
+            else:
+                raise AttributeError('The bound you selected does not exist. Try "upper", "mean", "lower" or "tuple".')
+
+            redundancies.append(redundancy)
+
+        return redundancies  # r_i
     def effective_connectivity(self, operator=mean, norm=True):
         r"""The Effective Connectiviy is the mean number of input nodes needed to determine the transition of the node.
 
@@ -213,10 +276,6 @@ class BooleanNode(object):
         See Also:
             :func:`input_redundancy`, :func:`input_symmetry`, :func:`~cana.boolean_network.BooleanNetwork.effective_graph`.
         """
-        #
-        # Canalization can only occur when k>= 2
-        if self.k < 2:
-            return 0.0
 
         k_r = self.input_redundancy(operator=operator, norm=False)
         #
@@ -225,7 +284,7 @@ class BooleanNode(object):
             k_e = k_e / self.k
         return k_e
 
-    def edge_effectiveness(self, bound='mean'):
+    def edge_effectiveness(self, bound='mean', biased = False):
         r"""The Edge Effectiveness is the mean number of an input's states needed to determine the transition of the node.
 
         .. math::
@@ -241,7 +300,10 @@ class BooleanNode(object):
         See Also:
             :func:`input_redundancy`, :func:`input_symmetry`, :func:`~cana.boolean_network.BooleanNetwork.effective_graph`.
         """
-        e_i = [1.0 - x_i for x_i in self.edge_redundancy(bound=bound)]
+        if not biased:
+            e_i = [1.0 - x_i for x_i in self.edge_redundancy(bound=bound)]
+        else:
+            e_i = [1.0 - x_i for x_i in self.edge_redundancy_bias_input(bound=bound)]
         return e_i
 
     def edge_symmetry(self, bound='upper'):
@@ -704,6 +766,40 @@ class BooleanNode(object):
             :func:`~cana.boolean_network.BooleanNetwork.network_bias`
         """
         return sum(map(int, self.outputs)) / 2**self.k
+
+    def add_biased_input(self, input):
+        '''
+        when input is None, just reset __mu_updated
+        :param input:
+        :return:
+        '''
+        if input is None:
+            self.__mu_updated = False
+            return
+        if len(input) != self.k:
+            print("bias vector size doesn't equal to node degree!")
+            raise ValueError
+        self._input_bias = list(input)
+        self.__mu_updated = False
+
+    def _calc_mu_bias(self):
+        if self._input_bias is None:
+            return
+        self._mu_bias = [0.0] * (2 ** self.k)
+        for i in range(2 ** self.k):
+            self._mu_bias[i] = prod(
+                [(1 - p) if state == '0' else p for p, state in
+                 zip(self._input_bias, statenum_to_binstate(i, self.k))])
+        self.__mu_updated = True
+
+    def bias_from_bias_input(self):
+        """
+        Calculate the node bias from biased input
+        :return: float
+        """
+        if not self.__mu_updated:
+            self._calc_mu_bias()
+        return sum([int(i)*j for i,j in zip(self.outputs, self._mu_bias)])
 
     def c_sensitivity(self, c, mode="default", max_k=0):
         """ Node c-sensitivity.
