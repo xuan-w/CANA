@@ -1268,10 +1268,28 @@ class BooleanNetwork:
         """
         return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
 
+    def predicted_impact_node(self, source, t, graph="effective", path="at_most_t_edges", bias_iter=None,
+                              bound="mean", threshold=0.0):
+        """Predicted impact of flipping source on every node for steps 1..t, shape (t, Nnodes).
+
+        See :func:`cana.dynamical_impact.predicted_impact` for the options
+        (graph, path rule, bias-aware EG).
+        """
+        return dyn.predicted_impact(self, source, t, graph=graph, path=path, bias_iter=bias_iter, bound=bound,
+                                    threshold=threshold)
+
     def approx_dynamic_impact(self, source, n_steps=1, target_set=None, bound='mean', threshold=0.0, biased=False,
                               b_iter=2):
         """Use the network structure to approximate the dynamical impact of a perturbation to node for each of n_steps
         for details see: Gates et al (2020).
+
+        Legacy entry point, kept unchanged. On this branch (bias_input) its EG
+        row (1) equals ``predicted_impact(self, source, n_steps,
+        path="inside_light_cone")`` and, with ``biased=True``, its bias-EG row
+        (2) equals the same with ``bias_iter=b_iter``; the IG row (0) is the
+        structural distance, whose binary light cone is
+        ``predicted_impact(self, source, n_steps, graph="interaction")``.
+        Prefer :meth:`predicted_impact_node` in new code.
 
         Args:
             source (int) : the source index for perturbations
