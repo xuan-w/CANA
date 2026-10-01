@@ -1231,7 +1231,7 @@ class BooleanNetwork:
     #
     # Dynamical Impact
     #
-    def partial_derative_node(self, node, n_traj=10, t=1):
+    def partial_derative_node(self, node, n_traj=10, t=1, rng=None):
         """The partial derivative of node on all other nodes after t steps
 
         This is the instantaneous impact, P(j differs at step s); see
@@ -1245,12 +1245,16 @@ class BooleanNetwork:
             n_traj (int) : the number of trajectories used to approximate the dynamical impact of a node.
                 if 0 then the full STG is used to calculate the true value instead of the approximation method.
 
+            rng (numpy Generator, int or None) : source of the sampled initial configurations; an int
+                seeds a new Generator. None (the default) keeps the old, unseedable sampler.
+
         Returns:
             (vector) : the partial derivatives
         """
-        return dyn.instantaneous_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
+        return dyn.instantaneous_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t,
+                                             rng)
 
-    def cumulative_impact_node(self, node, n_traj=10, t=1):
+    def cumulative_impact_node(self, node, n_traj=10, t=1, rng=None):
         """P(j has differed from the unperturbed run at some step <= s), for s = 1..t.
 
         Same arguments as :meth:`partial_derative_node`; see :mod:`cana.dynamical_impact`.
@@ -1258,15 +1262,15 @@ class BooleanNetwork:
         Returns:
             (matrix) : shape (t, Nnodes)
         """
-        return dyn.cumulative_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
+        return dyn.cumulative_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t, rng)
 
-    def dynamical_impact_node(self, node, n_traj=10, t=1):
+    def dynamical_impact_node(self, node, n_traj=10, t=1, rng=None):
         """Both the instantaneous and the cumulative impact of node from one simulation pass.
 
         Returns:
             (tuple of matrices) : (instantaneous, cumulative), each of shape (t, Nnodes)
         """
-        return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
+        return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t, rng)
 
     def predicted_impact_node(self, source, t, graph="effective", path="at_most_t_edges", bias_iter=None,
                               bound="mean", threshold=0.0):

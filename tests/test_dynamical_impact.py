@@ -70,3 +70,47 @@ def test_partial_derative_node_output_unchanged_when_sampling(monkeypatch):
     new = bn.partial_derative_node(2, n_traj=50, t=8)
     old = _partial_derative_node_before_split(bn, 2, configs, t=8)
     assert np.array_equal(old, new)
+
+
+def test_rng_makes_sampling_reproducible():
+    bn = BUDDING_YEAST()
+    a = bn.dynamical_impact_node(2, n_traj=200, t=6, rng=11)
+    b = bn.dynamical_impact_node(2, n_traj=200, t=6, rng=np.random.default_rng(11))
+    c = bn.dynamical_impact_node(2, n_traj=200, t=6, rng=12)
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))
+    assert not all(np.array_equal(x, y) for x, y in zip(a, c))
+    assert np.array_equal(bn.partial_derative_node(2, n_traj=200, t=6, rng=11), a[0])
+    assert np.array_equal(bn.cumulative_impact_node(2, n_traj=200, t=6, rng=11), a[1])
+
+
+def test_rng_generator_is_advanced_not_copied():
+    # two calls on one Generator draw different configurations, as a caller looping over sources expects
+    bn = BUDDING_YEAST()
+    rng = np.random.default_rng(3)
+    first = bn.partial_derative_node(2, n_traj=100, t=4, rng=rng)
+    second = bn.partial_derative_node(2, n_traj=100, t=4, rng=rng)
+    assert not np.array_equal(first, second)
+
+
+def test_rng_leaves_global_random_alone():
+    import random
+    random.seed(5)
+    state = random.getstate()
+    BUDDING_YEAST().dynamical_impact_node(1, n_traj=50, t=3, rng=0)
+    assert random.getstate() == state
+
+
+def test_rng_sample_matches_exact_truth():
+    # uniform over all 2^12 states: 20000 draws put every entry within 0.03 of the exact value
+    bn = BUDDING_YEAST()
+    exact = bn.dynamical_impact_node(4, n_traj=0, t=8)
+    sampled = bn.dynamical_impact_node(4, n_traj=20_000, t=8, rng=1)
+    for e, s in zip(exact, sampled):
+        assert np.abs(e - s).max() < 0.03
+
+
+def test_exact_enumeration_ignores_rng():
+    bn = BUDDING_YEAST()
+    a = bn.dynamical_impact_node(4, n_traj=0, t=5)
+    b = bn.dynamical_impact_node(4, n_traj=0, t=5, rng=99)
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))

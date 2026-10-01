@@ -25,21 +25,31 @@ import numpy as np
 from cana.cutils import binstate_compare, flip_binstate_bit, random_binstate
 
 
-def _configurations(num2bin, Nnodes, Nstates, n_traj):
-    """Initial configurations and their count: every state if n_traj == 0, else n_traj random ones."""
+def _configurations(num2bin, Nnodes, Nstates, n_traj, rng=None):
+    """Initial configurations and their count: every state if n_traj == 0, else n_traj random ones.
+
+    The random ones are uniform over the 2^Nnodes states. With rng=None they
+    come from cana.cutils.random_binstate, which reseeds Python's global
+    `random` from the OS on every call, so the draw cannot be reproduced (and
+    the global state is clobbered). Pass rng -- a numpy Generator, or an int
+    seed for one -- to draw them from the caller's generator instead.
+    """
     if n_traj == 0:
         return (num2bin(statenum) for statenum in range(Nstates)), Nstates
-    return (random_binstate(Nnodes) for _ in range(n_traj)), n_traj
+    if rng is None:
+        return (random_binstate(Nnodes) for _ in range(n_traj)), n_traj
+    bits = np.random.default_rng(rng).integers(0, 2, size=(n_traj, Nnodes))   # a Generator is used as is
+    return ("".join("1" if b else "0" for b in row) for row in bits), n_traj
 
 
-def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t):
+def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng=None):
     """One simulation pass returning (instantaneous, cumulative), each a (t, Nnodes) array.
 
     Row s of each array is the state after s + 1 steps.
     """
     instantaneous = np.zeros((t, Nnodes), dtype=float)
     cumulative = np.zeros((t, Nnodes), dtype=float)
-    configs, n_configs = _configurations(num2bin, Nnodes, Nstates, n_traj)
+    configs, n_configs = _configurations(num2bin, Nnodes, Nstates, n_traj, rng)
 
     for config in configs:
         perturbed_config = flip_binstate_bit(config, node)
@@ -56,7 +66,7 @@ def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t):
     return instantaneous / n_configs, cumulative / n_configs
 
 
-def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1):
+def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None):
     """Instantaneous and cumulative impact of flipping node, from one pass.
 
     Args:
@@ -68,21 +78,24 @@ def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1):
         n_traj (int) : the number of sampled initial configurations;
             if 0, every state is used and the result is exact.
         t (int) : the number of time steps.
+        rng (numpy Generator, int or None) : source of the sampled initial
+            configurations (n_traj > 0); an int seeds a new Generator. None keeps
+            CANA's random_binstate, which cannot be seeded (see _configurations).
 
     Returns:
         (tuple of arrays) : (instantaneous, cumulative), each of shape (t, Nnodes).
     """
-    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t)
+    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng)
 
 
-def instantaneous_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1):
+def instantaneous_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None):
     """P(j differs at step s) for s = 1..t, shape (t, Nnodes). See :func:`dynamical_impact_node`."""
-    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t)[0]
+    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng)[0]
 
 
-def cumulative_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1):
+def cumulative_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None):
     """P(j has differed at some step <= s) for s = 1..t, shape (t, Nnodes). See :func:`dynamical_impact_node`."""
-    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t)[1]
+    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng)[1]
 
 
 # ---------------------------------------------------------------------------
