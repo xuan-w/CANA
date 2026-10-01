@@ -31,6 +31,10 @@ import re
 import copy
 
 
+
+# biased_effective_graph treats bias-aware edge effectivenesses below this as 0 (user decision 2026-10-01)
+BIASED_EDGE_ZERO_TOL = 1e-12
+
 class BooleanNetwork:
     """
 
@@ -546,6 +550,10 @@ class BooleanNetwork:
         for i, node in enumerate(self.nodes, start=0):
             e_is = node.edge_effectiveness(biased=True, bound=bound)
             for inputs, e_i in zip(self.logic[i]['in'], e_is):
+                # float rounding leaves ~1e-16 where the effectiveness is 0; such an edge would pass
+                # threshold=0 and enter the graph (and its light cone) with no real weight
+                if abs(e_i) < BIASED_EDGE_ZERO_TOL:
+                    e_i = 0.0
                 # If there is a threshold, only return those number above the threshold. Else, return all edges.
                 if (threshold is None) or ((threshold is not None) and (e_i > threshold)):
                     conditional_eg.add_edge(inputs, i, **{'weight': e_i})
