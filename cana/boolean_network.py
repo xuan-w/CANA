@@ -1289,8 +1289,11 @@ class BooleanNetwork:
 
         Legacy entry point, kept unchanged. On this branch (bias_input) its EG
         row (1) equals ``predicted_impact(self, source, n_steps,
-        path="inside_light_cone")`` and, with ``biased=True``, its bias-EG row
-        (2) equals the same with ``bias_iter=b_iter``; the IG row (0) is the
+        path="inside_light_cone")``. With ``biased=True``, its bias-EG row (2)
+        takes the light cone from the plain EG and the weights from the
+        bias-aware EG; ``predicted_impact(..., bias_iter=b_iter)`` takes both from
+        the bias-aware EG (decided 2026-10-01), so the two can differ where the
+        bias-aware EG has an edge the plain EG lacks. The IG row (0) is the
         structural distance, whose binary light cone is
         ``predicted_impact(self, source, n_steps, graph="interaction")``.
         Prefer :meth:`predicted_impact_node` in new code.

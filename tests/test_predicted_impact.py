@@ -3,7 +3,8 @@
 # Tests for ``predicted_impact`` in ``dynamical_impact.py``: one reference per path rule.
 #
 #   at_most_t_edges        brute force over simple paths of <= t edges
-#   inside_light_cone      BooleanNetwork.approx_dynamic_impact on this branch (rows 1 and 2)
+#   inside_light_cone      BooleanNetwork.approx_dynamic_impact on this branch (row 1); with
+#                          bias_iter, brute force inside the bias-aware EG's own cone
 #   global_strongest_path  brute force over all simple paths, gated by structural hops
 #   pnas2021               approx_dynamic_impact of the 2021 release ec0be10, extracted from git
 #   interaction graph      approx_dynamic_impact row 0, as the binary light cone (distance <= N)
@@ -103,12 +104,56 @@ def test_hand_built_examples(example, path):
 
 @pytest.mark.parametrize("name, factory", _networks())
 def test_inside_light_cone_equals_approx_dynamic_impact(name, factory):
+    # plain EG only: with bias_iter the cone now comes from the bias-aware EG, unlike the fork's row 2
     bn = factory()
     for src in _sources(bn, name):
-        legacy = bn.approx_dynamic_impact(src, T, biased=True, b_iter=2)
+        legacy = bn.approx_dynamic_impact(src, T)
         np.testing.assert_allclose(predicted_impact(bn, src, T, path="inside_light_cone"), legacy[1], atol=1e-12)
-        np.testing.assert_allclose(predicted_impact(bn, src, T, path="inside_light_cone", bias_iter=2), legacy[2],
-                                   atol=1e-12)
+
+
+def _inside_cone_brute_force(G, Nnodes, source, t_max):
+    """Row s-1: best simple path inside the subgraph of nodes within s hops of the source in G (source 0)."""
+    hops = nx.single_source_shortest_path_length(G, source)
+    out = np.zeros((t_max, Nnodes))
+    for s in range(1, t_max + 1):
+        sub = G.subgraph([n for n, d in hops.items() if d <= s])
+        out[s - 1] = _brute_force(sub, Nnodes, source, None)
+    return out
+
+
+@pytest.mark.parametrize("name, factory", _networks(small=True))
+def test_inside_light_cone_bias_aware_equals_brute_force(name, factory):
+    # cone and weights both from the bias-aware EG (decided 2026-10-01)
+    bn = factory()
+    t_max = 5
+    for src in _sources(bn, name):
+        G = bn.biased_effective_graph(max_iter=2, threshold=0.0)
+        np.testing.assert_allclose(predicted_impact(bn, src, t_max, path="inside_light_cone", bias_iter=2),
+                                   _inside_cone_brute_force(G, bn.Nnodes, src, t_max), atol=1e-12)
+
+
+class _BiasStub(_Stub):
+    """A plain EG and a bias-aware EG with one extra edge, so their light cones differ."""
+
+    def __init__(self, edges, extra, names):
+        super().__init__(edges, names)
+        self.G_biased = self.G.copy()
+        for u, v, w in extra:
+            self.G_biased.add_edge(names.index(u), names.index(v), weight=w)
+
+    def biased_effective_graph(self, max_iter=1, bound="mean", threshold=0.0):
+        return self.G_biased
+
+
+def test_inside_light_cone_takes_cone_from_bias_aware_eg():
+    # plain EG: s -> a -> y (0.9 each). The bias-aware EG adds s -> y (0.5), so y is in its 1-hop cone,
+    # and the 2-edge path s -> a -> y (0.81) inside that cone counts from t = 1. With the plain EG's
+    # cone (the fork) y would be 0 at t = 1.
+    names = ["s", "a", "y"]
+    stub = _BiasStub([("s", "a", 0.9), ("a", "y", 0.9)], [("s", "y", 0.5)], names)
+    got = predicted_impact(stub, 0, 2, path="inside_light_cone", bias_iter=1)[:, names.index("y")]
+    np.testing.assert_allclose(got, [0.81, 0.81])
+    assert predicted_impact(stub, 0, 2, path="inside_light_cone")[0, names.index("y")] == 0.0
 
 
 @pytest.mark.parametrize("name, factory", _networks())

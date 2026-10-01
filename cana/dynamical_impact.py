@@ -111,9 +111,11 @@ def cumulative_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1,
 #
 #   "at_most_t_edges"        best path of at most t edges (the paper's text). Default.
 #   "inside_light_cone"      best path inside the subgraph of nodes within t
-#                            EG hops of the source; the path itself may be
-#                            longer than t (the 2022 bias_input fork, i.e.
-#                            BooleanNetwork.approx_dynamic_impact on this branch).
+#                            hops of the source on the same EG; the path itself
+#                            may be longer than t (the 2022 bias_input fork, i.e.
+#                            BooleanNetwork.approx_dynamic_impact on this branch;
+#                            with bias_iter the fork took the cone from the plain
+#                            EG instead, see _inside_light_cone).
 #   "global_strongest_path"  the strongest path over the whole EG, counted once
 #                            the target is within t hops in the structural graph.
 #   "pnas2021"               the 2021 release (ec0be10) verbatim, including its
@@ -175,14 +177,16 @@ def _at_most_t_edges(G, Nnodes, source, t):
     return out
 
 
-def _inside_light_cone(G, G_cone, Nnodes, source, t):
-    """Best path within the subgraph of nodes at most s hops from the source in G_cone, for s = 1..t.
+def _inside_light_cone(G, Nnodes, source, t):
+    """Best path within the subgraph of nodes at most s hops from the source in G, for s = 1..t.
 
-    As the bias_input fork's approx_dynamic_impact: the light cone is taken on
-    the plain EG (G_cone) and the path weights on G (the plain or the
-    bias-aware EG). Once the cone stops growing, the last subgraph is reused.
+    The cone and the path weights come from the same graph G (the plain or the
+    bias-aware EG; decided 2026-10-01). The bias_input fork's
+    approx_dynamic_impact took the cone from the plain EG even for the
+    bias-aware weights; since the bias-aware EG keeps every plain-EG edge and
+    can only add edges, its cone is never smaller.
     """
-    hops = nx.single_source_shortest_path_length(G_cone, source)
+    hops = nx.single_source_shortest_path_length(G, source)
     out = np.zeros((t, Nnodes))
     for step in range(1, t + 1):
         cone = [n for n, d in hops.items() if d <= step]
@@ -262,12 +266,9 @@ def predicted_impact(bn, source, t, graph="effective", path="at_most_t_edges", b
         raise ValueError(f"graph must be 'effective', 'structural' or 'interaction', not {graph!r}")
     if path not in PATH_RULES:
         raise ValueError(f"path must be one of {PATH_RULES}, not {path!r}")
-    if path == "inside_light_cone":
-        # the light cone comes from the plain EG even when the weights are bias-aware (as in the fork)
-        G_plain = bn.effective_graph(bound=bound, threshold=threshold)
-        G = G_plain if bias_iter is None else _effective_graph(bn, bias_iter, bound, threshold)
-        return _inside_light_cone(G, G_plain, bn.Nnodes, source, t)
     G = _effective_graph(bn, bias_iter, bound, threshold)
+    if path == "inside_light_cone":
+        return _inside_light_cone(G, bn.Nnodes, source, t)
     if path == "at_most_t_edges":
         return _at_most_t_edges(G, bn.Nnodes, source, t)
     if path == "global_strongest_path":
