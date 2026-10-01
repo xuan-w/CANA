@@ -23,6 +23,7 @@ import random
 import itertools
 from cana.boolean_node import BooleanNode
 import cana.bns as bns
+import cana.dynamical_impact as dyn
 from cana.control import fvs, mds, sc
 from cana.utils import *
 import warnings
@@ -1233,6 +1234,9 @@ class BooleanNetwork:
     def partial_derative_node(self, node, n_traj=10, t=1):
         """The partial derivative of node on all other nodes after t steps
 
+        This is the instantaneous impact, P(j differs at step s); see
+        :mod:`cana.dynamical_impact`.
+
         Args:
             node (int) : the node index for perturbations
 
@@ -1244,23 +1248,25 @@ class BooleanNetwork:
         Returns:
             (vector) : the partial derivatives
         """
-        partial = np.zeros((t, self.Nnodes), dtype=float)
-        if n_traj == 0:
-            config_genderator = (self.num2bin(statenum) for statenum in range(self.Nstates))
-            n_traj = self.Nstates
-        else:
-            # sample configurations
-            config_genderator = (random_binstate(self.Nnodes) for itraj in range(n_traj))
+        return dyn.instantaneous_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
 
-        for config in config_genderator:
-            perturbed_config = flip_binstate_bit(config, node)
-            for n_step in range(t):
-                config = self.step(config)
-                perturbed_config = self.step(perturbed_config)
-                partial[n_step] += np.logical_not(binstate_compare(config, perturbed_config))
-        partial /= n_traj
+    def cumulative_impact_node(self, node, n_traj=10, t=1):
+        """P(j has differed from the unperturbed run at some step <= s), for s = 1..t.
 
-        return partial
+        Same arguments as :meth:`partial_derative_node`; see :mod:`cana.dynamical_impact`.
+
+        Returns:
+            (matrix) : shape (t, Nnodes)
+        """
+        return dyn.cumulative_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
+
+    def dynamical_impact_node(self, node, n_traj=10, t=1):
+        """Both the instantaneous and the cumulative impact of node from one simulation pass.
+
+        Returns:
+            (tuple of matrices) : (instantaneous, cumulative), each of shape (t, Nnodes)
+        """
+        return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t)
 
     def approx_dynamic_impact(self, source, n_steps=1, target_set=None, bound='mean', threshold=0.0, biased=False,
                               b_iter=2):
