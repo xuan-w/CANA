@@ -114,3 +114,103 @@ def test_exact_enumeration_ignores_rng():
     a = bn.dynamical_impact_node(4, n_traj=0, t=5)
     b = bn.dynamical_impact_node(4, n_traj=0, t=5, rng=99)
     assert all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+# ---------------------------------------------------------------------------
+# perturbation="flip_pin" and the derived cumulative impacts (user, 2026-10-05)
+# ---------------------------------------------------------------------------
+
+def test_flip_pin_by_hand():
+    # Pin x0 at its flipped value: from (not a, b) the perturbed copy goes to (not a, a) and stays,
+    # while the free copy circles (b, not a) -> (not a, not b) -> (not b, a) -> (a, b). Averaged over
+    # the four initial states (a, b), each difference is 1 always, 0 never, or 1/2 (only when a == b,
+    # or only when a != b).
+    bn = _two_node_oscillator()
+    inst, cum = bn.dynamical_impact_node(0, n_traj=0, t=4, perturbation="flip_pin")
+    assert np.array_equal(inst, [[.5, 1], [0, .5], [.5, 0], [1, .5]])
+    assert np.array_equal(cum, [[.5, 1], [.5, 1], [1, 1], [1, 1]])
+
+
+def test_flip_is_the_default_and_unchanged():
+    bn = BUDDING_YEAST()
+    a = bn.dynamical_impact_node(5, n_traj=0, t=6)
+    b = bn.dynamical_impact_node(5, n_traj=0, t=6, perturbation="flip")
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_flip_pin_holds_the_source():
+    # the perturbed copy's source never moves, so the source differs at step s exactly when the
+    # free copy's source equals its initial (unflipped) value at s
+    bn = BUDDING_YEAST()
+    src, t = 3, 7
+    inst, _ = bn.dynamical_impact_node(src, n_traj=0, t=t, perturbation="flip_pin")
+    expected = np.zeros(t)
+    for statenum in range(bn.Nstates):
+        config = start = bn.num2bin(statenum)
+        for s in range(t):
+            config = bn.step(config)
+            expected[s] += config[src] == start[src]
+    assert np.allclose(inst[:, src], expected / bn.Nstates)
+
+
+def test_pinned_step_is_step_then_overwrite():
+    bn = BUDDING_YEAST()
+    rng = np.random.default_rng(0)
+    for _ in range(200):
+        state = ''.join(rng.choice(['0', '1'], bn.Nnodes))
+        node, pin = int(rng.integers(bn.Nnodes)), str(rng.integers(2))
+        stepped = bn.step(state)
+        assert bn.pinned_step(state, pinned_binstate=pin, pinned_var=[node]) == stepped[:node] + pin + stepped[node + 1:]
+
+
+def test_flip_pin_sample_matches_exact_truth():
+    bn = BUDDING_YEAST()
+    exact = bn.dynamical_impact_node(4, n_traj=0, t=8, perturbation="flip_pin")
+    sampled = bn.dynamical_impact_node(4, n_traj=20_000, t=8, rng=1, perturbation="flip_pin")
+    for e, s in zip(exact, sampled):
+        assert np.abs(e - s).max() < 0.03
+
+
+def test_flip_pin_cumulative_is_monotone_and_bounds_instantaneous():
+    bn = BUDDING_YEAST()
+    for node in range(bn.Nnodes):
+        inst, cum = bn.dynamical_impact_node(node, n_traj=0, t=10, perturbation="flip_pin")
+        assert np.all(np.diff(cum, axis=0) >= 0)
+        assert np.all(cum >= inst)
+
+
+def test_derive_impact_hand_example():
+    inst = np.array([1, 0, 0.4, 0, 0, 0])[:, None]
+    assert np.allclose(dyn.derive_impact(inst, None, "cumulative_integral")[:, 0], [1, 1, 1.4, 1.4, 1.4, 1.4])
+    assert dyn.derive_impact(inst, "stored", "cumulative_max") == "stored"
+    assert dyn.derive_impact(inst, None, "instantaneous") is inst
+    # stored tensors are (sources, t, Nnodes): the sum runs over t
+    stack = np.stack([inst, 2 * inst])
+    assert np.allclose(dyn.derive_impact(stack, None, "cumulative_integral")[1, :, 0], [2, 2, 2.8, 2.8, 2.8, 2.8])
+
+
+def test_cumulative_integral_is_the_mean_of_per_configuration_sums():
+    # the sum over steps commutes with the average over configurations, so deriving it from the
+    # stored instantaneous impact equals summing the 0/1 differences per configuration first
+    bn = BUDDING_YEAST()
+    node, t = 2, 6
+    inst, _ = bn.dynamical_impact_node(node, n_traj=0, t=t)
+    total = np.zeros((t, bn.Nnodes))
+    for statenum in range(bn.Nstates):
+        config = bn.num2bin(statenum)
+        perturbed = flip_binstate_bit(config, node)
+        running = np.zeros(bn.Nnodes)
+        for s in range(t):
+            config, perturbed = bn.step(config), bn.step(perturbed)
+            running += np.logical_not(binstate_compare(config, perturbed))
+            total[s] += running
+    assert np.allclose(dyn.derive_impact(inst, None, "cumulative_integral"), total / bn.Nstates)
+
+
+def test_unknown_settings_raise():
+    import pytest
+    bn = BUDDING_YEAST()
+    with pytest.raises(ValueError):
+        bn.dynamical_impact_node(0, n_traj=0, t=2, perturbation="pin")
+    with pytest.raises(ValueError):
+        dyn.derive_impact(np.zeros((2, 2)), None, "cumulative")

@@ -15,6 +15,24 @@ The cumulative measure is the one a cumulative predictor (is j within t hops
 on the influence graph, the strongest effective-graph path of at most t hops)
 describes, since both only grow with t.
 
+Two independent settings (user, 2026-10-05; merged-eg-project PLAN.org "Pin
+perturbation and integral cumulative impact"):
+
+- ``perturbation``: ``"flip"`` flips the node once at t = 0 and lets it evolve;
+  ``"flip_pin"`` flips it and then holds it at the flipped value for every
+  later step (one node pinned to a constant, via
+  :meth:`BooleanNetwork.pinned_step`; no attractor is involved). The
+  unperturbed copy always runs free.
+- ``impact``: ``"instantaneous"``; ``"cumulative_max"``, the cumulative impact
+  above (per configuration the running max of the 0/1 difference, averaged
+  afterwards); ``"cumulative_integral"``, the running sum of the
+  instantaneous impact, i.e. the expected number of steps <= t at which j
+  differed. A sum commutes with the average over configurations, so the
+  integral is derived exactly from the stored instantaneous impact by
+  :func:`derive_impact`; the max does not commute, so the simulation pass
+  stores it alongside. The integral grows without bound on limit cycles;
+  that is accepted because rho ranks the targets within one step.
+
 Following :mod:`cana.control.pinning`, these are plain functions that take
 what they need from the network as arguments; :class:`BooleanNetwork` keeps
 thin methods that call them.
@@ -42,22 +60,39 @@ def _configurations(num2bin, Nnodes, Nstates, n_traj, rng=None):
     return ("".join("1" if b else "0" for b in row) for row in bits), n_traj
 
 
-def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng=None):
-    """One simulation pass returning (instantaneous, cumulative), each a (t, Nnodes) array.
+PERTURBATIONS = ("flip", "flip_pin")
+IMPACTS = ("instantaneous", "cumulative_max", "cumulative_integral")
 
-    Row s of each array is the state after s + 1 steps.
+
+def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng=None, perturbation="flip",
+                 pinned_step=None):
+    """One simulation pass returning (instantaneous, cumulative_max), each a (t, Nnodes) array.
+
+    Row s of each array is the state after s + 1 steps. With perturbation
+    "flip_pin", the perturbed copy is advanced by pinned_step with `node`
+    held at its flipped value; the unperturbed copy is advanced by step.
     """
+    if perturbation not in PERTURBATIONS:
+        raise ValueError(f"perturbation must be one of {PERTURBATIONS}, not {perturbation!r}")
+    if perturbation == "flip_pin" and pinned_step is None:
+        raise ValueError("perturbation 'flip_pin' needs pinned_step (BooleanNetwork.pinned_step)")
     instantaneous = np.zeros((t, Nnodes), dtype=float)
     cumulative = np.zeros((t, Nnodes), dtype=float)
     configs, n_configs = _configurations(num2bin, Nnodes, Nstates, n_traj, rng)
 
     for config in configs:
         perturbed_config = flip_binstate_bit(config, node)
+        if perturbation == "flip_pin":
+            pin = perturbed_config[node]
+            def perturbed_step(s):
+                return pinned_step(s, pinned_binstate=pin, pinned_var=[node])
+        else:
+            perturbed_step = step
         # nodes that have differed at any step so far, for this initial configuration only
         ever_differed = np.zeros(Nnodes, dtype=bool)
         for n_step in range(t):
             config = step(config)
-            perturbed_config = step(perturbed_config)
+            perturbed_config = perturbed_step(perturbed_config)
             differs = np.logical_not(binstate_compare(config, perturbed_config))
             ever_differed |= differs
             instantaneous[n_step] += differs
@@ -66,8 +101,25 @@ def _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng=None):
     return instantaneous / n_configs, cumulative / n_configs
 
 
-def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None):
-    """Instantaneous and cumulative impact of flipping node, from one pass.
+def derive_impact(instantaneous, cumulative_max, impact):
+    """The (t, Nnodes) truth for one impact setting from the two stored arrays of a pass.
+
+    Works on any array whose second-to-last axis is time, e.g. a stored
+    (sources, t, Nnodes) tensor. "cumulative_integral" is the running sum of
+    the instantaneous impact over steps 1..t (e.g. 1, 0, 0.4, 0 -> 1, 1, 1.4, 1.4).
+    """
+    if impact == "instantaneous":
+        return instantaneous
+    if impact == "cumulative_max":
+        return cumulative_max
+    if impact == "cumulative_integral":
+        return np.cumsum(instantaneous, axis=-2)
+    raise ValueError(f"impact must be one of {IMPACTS}, not {impact!r}")
+
+
+def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None, perturbation="flip",
+                          pinned_step=None):
+    """Instantaneous and cumulative (max) impact of perturbing node, from one pass.
 
     Args:
         step (callable) : advances a binary-state string by one synchronous step.
@@ -81,11 +133,15 @@ def dynamical_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, 
         rng (numpy Generator, int or None) : source of the sampled initial
             configurations (n_traj > 0); an int seeds a new Generator. None keeps
             CANA's random_binstate, which cannot be seeded (see _configurations).
+        perturbation (str) : "flip" (flip once) or "flip_pin" (flip, then hold
+            the node at the flipped value); see the module docstring.
+        pinned_step (callable) : BooleanNetwork.pinned_step; needed for "flip_pin".
 
     Returns:
-        (tuple of arrays) : (instantaneous, cumulative), each of shape (t, Nnodes).
+        (tuple of arrays) : (instantaneous, cumulative_max), each of shape (t, Nnodes).
+            The cumulative integral is derive_impact(..., "cumulative_integral").
     """
-    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng)
+    return _impact_pass(step, num2bin, Nnodes, Nstates, node, n_traj, t, rng, perturbation, pinned_step)
 
 
 def instantaneous_impact_node(step, num2bin, Nnodes, Nstates, node, n_traj=10, t=1, rng=None):

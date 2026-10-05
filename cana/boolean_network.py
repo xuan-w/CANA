@@ -1514,13 +1514,17 @@ class BooleanNetwork:
         """
         return dyn.cumulative_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t, rng)
 
-    def dynamical_impact_node(self, node, n_traj=10, t=1, rng=None):
-        """Both the instantaneous and the cumulative impact of node from one simulation pass.
+    def dynamical_impact_node(self, node, n_traj=10, t=1, rng=None, perturbation="flip"):
+        """Both the instantaneous and the cumulative (max) impact of node from one simulation pass.
+
+        perturbation is "flip" (flip once) or "flip_pin" (flip, then hold node at the
+        flipped value); see :mod:`cana.dynamical_impact`.
 
         Returns:
-            (tuple of matrices) : (instantaneous, cumulative), each of shape (t, Nnodes)
+            (tuple of matrices) : (instantaneous, cumulative_max), each of shape (t, Nnodes)
         """
-        return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t, rng)
+        return dyn.dynamical_impact_node(self.step, self.num2bin, self.Nnodes, self.Nstates, node, n_traj, t, rng,
+                                         perturbation=perturbation, pinned_step=self.pinned_step)
 
     def predicted_impact_node(self, source, t, graph="effective", path="at_most_t_edges", bias_iter=None,
                               bound="mean", threshold=0.0):
