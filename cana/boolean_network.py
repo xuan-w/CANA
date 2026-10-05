@@ -1018,7 +1018,7 @@ class BooleanNetwork:
         # stimulus), modify the model to make it non-constant before
         # calling this function.
         if self.keep_constants:
-            constant_nodeids = set(self.get_constants().keys())
+            constant_nodeids = set(self.constants.keys())  # bias_input keeps constants as a dict; no get_constants()
             nodeids = [nodeid for nodeid in nodeids if nodeid not in constant_nodeids]
         bin_attractors = [
             [self.num2bin(state) for state in attr] for attr in self._attractors
