@@ -52,6 +52,21 @@ from cana.cutils import (
 from cana.utils import entropy, flip_binstate_bit_set, output_transitions
 
 
+def _minimal_period(seq):
+    """Smallest ``k`` that divides ``len(seq)`` with ``seq[i] == seq[i % k]``."""
+    n = len(seq)
+    for k in range(1, n + 1):
+        if n % k == 0 and all(seq[i] == seq[i % k] for i in range(n)):
+            return k
+    return n
+
+
+def _pcstg_target(pcstg, att):
+    """Target node set of a pcstg; falls back to ``set(att)`` for graphs
+    built before the target was recorded."""
+    return pcstg.graph.get("target", set(att))
+
+
 def _signatures_distinguish_attractors(candidate_nodes, bin_attractors):
     """Necessary-condition pre-filter for pinning controllability.
 
@@ -1135,8 +1150,10 @@ class BooleanNetwork:
            distinguish all attractors. Skips the expensive pcstg build
            for obviously-invalid candidates.
         2. *Sufficiency check*: build pcstg per attractor; require
-           ``attracting_components(pcstg) == [set(att)]`` (a single
-           attracting SCC, equal to the target). The weaker
+           ``attracting_components(pcstg) == [pcstg.graph['target']]``
+           (a single attracting SCC, equal to the target with the
+           drivers in phase; see
+           :func:`pinning_controlled_state_transition_graph`). The weaker
            ``WCC == 1`` check used in earlier revisions only verifies
            that the pcstg is connected — it does not verify that the
            pcstg's unique attractor equals the intended target. For a
@@ -1206,10 +1223,11 @@ class BooleanNetwork:
                 for att, pcstg in pcstg_dict.items():
                     # Strict check: pcstg must have exactly one
                     # attracting SCC, and that SCC must equal the
-                    # target attractor's state set. Pure
-                    # set/integer comparison — no floating point.
+                    # target (the attractor with the drivers in phase,
+                    # ``pcstg.graph['target']``). Pure set/integer
+                    # comparison — no floating point.
                     attracting = list(nx.attracting_components(pcstg))
-                    if len(attracting) != 1 or attracting[0] != set(att):
+                    if len(attracting) != 1 or attracting[0] != _pcstg_target(pcstg, att):
                         controlled = False
                         break
                 if controlled:
@@ -1263,19 +1281,58 @@ class BooleanNetwork:
         return cstg
 
     def pinning_controlled_state_transition_graph(self, driver_nodes=[]):
-        """Returns a dictionary of Controlled State-Transition-Graph (CSTG)
-        under the assumptions of pinning controllability.
+        """Returns a dictionary of Pinning-Controlled State-Transition-Graphs
+        (pcstg), one per attractor.
 
-        In practice, it copies the original STG, flips driver nodes (variables), and updates the CSTG.
+        For each attractor ``A``, the driver nodes are pinned to follow
+        ``A``'s projection: at step ``t`` the drivers hold
+        ``a^t_D``, the driver bits of the state ``t`` steps along the
+        cycle. The unpinned nodes evolve under the network's rules.
+
+        *Phase.* For a limit cycle the drivers' schedule
+        ``a^0_D, a^1_D, ...`` repeats with some minimal period ``k``
+        (``k`` divides the cycle length ``L``; ``k = 1`` for a fixed
+        point or when the drivers are constant around the cycle). The
+        pinned dynamics is deterministic only once the schedule phase
+        ``t mod k`` is known, so each pcstg node is a pair
+        ``(t mod k, x)`` with ``x_D = a^t_D``, and every node has
+        exactly one out-edge, to ``(t+1 mod k, x')`` where ``x'`` has
+        its unpinned nodes updated from ``x`` and its drivers set to
+        ``a^{t+1}_D``. The pcstg has ``k * 2^(N - |D|)`` nodes.
+
+        Earlier revisions keyed nodes by the state ``x`` alone. That is
+        the same graph whenever the driver pattern determines the
+        phase (each of the ``k`` patterns in one period is distinct),
+        which covers fixed points, cycles whose driver patterns are all
+        distinct, and cycles whose repeated patterns always have the
+        same successor. When two phases share a driver pattern but
+        have different successors, the old graph merged them: such a
+        node had several out-edges, one per phase, and attractor tests
+        ran on that union rather than on any pinned trajectory.
+
+        *Node ids.* When the pattern determines the phase, node ids are
+        the plain state numbers (``bin2num(x)``), exactly as before.
+        Otherwise the id is ``phase * 2**Nnodes + bin2num(x)``. Every
+        node carries ``phase`` and ``state`` attributes (plus the old
+        ``label``) so callers need not decode ids.
+
+        *Target.* ``pcstg.graph['target']`` holds the node ids of the
+        ``L`` states ``(t mod k, a^t)``: the attractor itself, with the
+        drivers in phase. ``pcstg.graph['period']`` is ``k`` and
+        ``pcstg.graph['phase_in_id']`` says whether ids encode the
+        phase. Use ``graph['target']``, not ``set(att)``, to find the
+        attractor in the pcstg.
 
         Args:
             driver_nodes (list) : The list of driver nodes.
 
         Returns:
-            (networkx.DiGraph) : The Pinning Controlled State-Transition-Graph.
+            (dict) : ``{tuple(att): networkx.DiGraph}``, keyed by the
+                attractor as in ``self._attractors``.
 
         See also:
-            :func:`controlled_state_transition_graph`, :func:`attractor_driver_nodes`, :func:`controlled_attractor_graph`.
+            :func:`fraction_pinned_configurations`,
+            :func:`pinning_control_driver_nodes`, :func:`pinned_step`.
         """
         self._check_compute_variables(attractors=True)
 
@@ -1292,35 +1349,20 @@ class BooleanNetwork:
 
         pcstg_dict = {}
         for att in self._attractors:
-            # For each STG edge ``(s_src, s_dst)`` *inside* the attractor,
-            # ``src_pin`` and ``dst_pin`` are the projections of those
-            # states onto the pinned variables. For a fixed-point
-            # attractor the self-loop gives ``src_pin == dst_pin``; for a
-            # length-L cycle the L tuples have ``dst_pin`` rotated one
-            # cycle-step ahead of ``src_pin``. (These are the same loop
-            # variables previously named ``attsource`` and ``attsink``;
-            # renamed because the old names suggested *attractor states*
-            # when they actually hold the *pin-bit projections* of those
-            # states.)
-            dn_attractor_transitions = [
-                tuple(
-                    "".join([self.num2bin(s)[dn] for dn in driver_nodes])
-                    for s in att_edge
-                )
-                for att_edge in self._stg.subgraph(att).edges()
+            cycle = self._attractor_in_cycle_order(att)
+            patterns = [
+                "".join(state[dn] for dn in driver_nodes) for state in cycle
             ]
+            period = _minimal_period(patterns)
+            schedule = patterns[:period]
+            # When the ``period`` patterns are distinct, the driver bits
+            # of a state already tell its phase, and plain state numbers
+            # are unique node ids (the pre-fix encoding).
+            phase_in_id = len(set(schedule)) < period
+            offset = 2**self.Nnodes if phase_in_id else 0
 
-            pcstg_states = [
-                self.bin2num(
-                    binstate_pinned_to_binstate(
-                        statenum_to_binstate(statenum, base=uncontrolled_system_size),
-                        src_pin,
-                        pinned_var=driver_nodes,
-                    )
-                )
-                for statenum in range(2**uncontrolled_system_size)
-                for src_pin, _dst_pin in dn_attractor_transitions
-            ]
+            def node_id(phase, binstate):
+                return phase * offset + self.bin2num(binstate)
 
             pcstg = nx.DiGraph(name="STG: " + self.name)
             pcstg.name = (
@@ -1331,37 +1373,56 @@ class BooleanNetwork:
                 + ")"
             )
 
-            pcstg.add_nodes_from((ps, {"label": ps}) for ps in pcstg_states)
-
-            for src_pin, dst_pin in dn_attractor_transitions:
+            for phase, pin in enumerate(schedule):
+                next_phase = (phase + 1) % period
+                next_pin = schedule[next_phase]
                 for statenum in range(2**uncontrolled_system_size):
                     initial = binstate_pinned_to_binstate(
                         statenum_to_binstate(statenum, base=uncontrolled_system_size),
-                        src_pin,
+                        pin,
                         pinned_var=driver_nodes,
                     )
-                    # ``pinned_step`` advances the unpinned variables
-                    # using ``initial`` (which has ``src_pin`` at the
-                    # pinned positions) and writes ``dst_pin`` at the
-                    # pinned positions of the output. For fixed-point
-                    # attractors ``src_pin == dst_pin`` so the pinned
-                    # positions are unchanged; for cycles where the pin
-                    # flips, this is what connects positions of the
-                    # pcstg around the cycle.
-                    pcstg.add_edge(
-                        self.bin2num(initial),
-                        self.bin2num(
-                            self.pinned_step(
-                                initial,
-                                pinned_binstate=dst_pin,
-                                pinned_var=driver_nodes,
-                            )
-                        ),
+                    # ``pinned_step`` advances the unpinned variables from
+                    # ``initial`` (drivers at this phase's pattern) and
+                    # writes the next phase's pattern at the drivers.
+                    nxt = self.pinned_step(
+                        initial, pinned_binstate=next_pin, pinned_var=driver_nodes
                     )
+                    src = node_id(phase, initial)
+                    pcstg.add_node(
+                        src, label=self.bin2num(initial), phase=phase,
+                        state=self.bin2num(initial),
+                    )
+                    pcstg.add_edge(src, node_id(next_phase, nxt))
 
+            pcstg.graph["target"] = {
+                node_id(t % period, state) for t, state in enumerate(cycle)
+            }
+            pcstg.graph["period"] = period
+            pcstg.graph["phase_in_id"] = phase_in_id
             pcstg_dict[tuple(att)] = pcstg
 
         return pcstg_dict
+
+    def _attractor_in_cycle_order(self, att):
+        """Return the attractor's states as binary strings, ordered by
+        stepping the unpinned network from ``att[0]``.
+
+        ``self._attractors`` stores each attractor as a set-like list
+        whose order is implementation-defined, so the cycle order is
+        recovered from the dynamics.
+        """
+        start = self.num2bin(att[0])
+        cycle = [start]
+        state = self.step(start)
+        while state != start:
+            cycle.append(state)
+            state = self.step(state)
+            if len(cycle) > len(att):
+                raise ValueError("attractor {} is not a cycle of the network".format(att))
+        if len(cycle) != len(att):
+            raise ValueError("attractor {} is not a cycle of the network".format(att))
+        return cycle
 
     def pinned_step(self, initial, pinned_binstate, pinned_var):
         """Advance the network one Boolean step under pinning control.
@@ -1533,23 +1594,34 @@ class BooleanNetwork:
         return att_reachable_from
 
     def fraction_pinned_attractors(self, pcstg_dict):
-        """Returns the Number of Accessible Attractors
+        """Returns the fraction of attractors that are an attracting
+        component of their own pcstg.
 
         Args:
             pcstg_dict (dict of networkx.DiGraph) : The dictionary of Pinned Controlled State-Transition-Graphs.
 
         Returns:
-            (int) : Number of Accessible Attractors
+            (float) : fraction of attractors reached under pinning.
         """
         reached_attractors = []
         for att, pcstg in pcstg_dict.items():
             pinned_att = list(nx.attracting_components(pcstg))
-            print(set(att), pinned_att)
-            reached_attractors.append(set(att) in pinned_att)
+            reached_attractors.append(_pcstg_target(pcstg, att) in pinned_att)
         return sum(reached_attractors) / float(len(pcstg_dict))
 
     def fraction_pinned_configurations(self, pcstg_dict):
         """Returns the Fraction of successfully Pinned Configurations
+
+        For each attractor, the fraction of pcstg nodes (phase, state)
+        whose pinned trajectory reaches the target, i.e. the attractor
+        with the drivers in phase (``pcstg.graph['target']``). Each
+        phase of the driver schedule counts once: the denominator is
+        ``period * 2^(N - |D|)``.
+
+        Every pcstg node has one out-edge, so the nodes that reach the
+        target are the target's ancestors plus the target itself. (In
+        such a functional graph this is also the weakly connected
+        component holding the target, which earlier revisions used.)
 
         Args:
             pcstg_dict (dict of networkx.DiGraph) : The dictionary of Pinned Controlled State-Transition-Graphs.
@@ -1559,13 +1631,14 @@ class BooleanNetwork:
         """
         pinned_configurations = []
         for att, pcstg in pcstg_dict.items():
-            att_reached = False
-            for wcc in nx.weakly_connected_components(pcstg):
-                if set(att) in list(nx.attracting_components(pcstg.subgraph(wcc))):
-                    pinned_configurations.append(len(wcc) / len(pcstg))
-                    att_reached = True
-            if not att_reached:
+            target = _pcstg_target(pcstg, att)
+            if not target <= set(pcstg):
                 pinned_configurations.append(0)
+                continue
+            reaching = set(target)
+            for node in target:
+                reaching |= nx.ancestors(pcstg, node)
+            pinned_configurations.append(len(reaching) / len(pcstg))
 
         return pinned_configurations
 

@@ -378,6 +378,84 @@ def test_thaliana_size5_false_positive_rejected_by_strict_check():
 
 
 # ---------------------------------------------------------------- #
+# Limit-cycle phase: driver patterns that repeat around the cycle   #
+# ---------------------------------------------------------------- #
+#
+# When two cycle phases share a driver pattern but are followed by
+# different patterns, a pcstg keyed by state alone merges the phases:
+# such a node gets one out-edge per phase and the attractor test runs
+# on a union of trajectories. The pcstg now keys nodes by
+# (phase mod k, state), k = minimal period of the driver schedule.
+
+
+def _mammalian_cycle_pin():
+    from cana.datasets.bio import load_cell_collective_model
+
+    bn = load_cell_collective_model("Mammalian Cell Cycle 2006")
+    bn.attractors(mode="stg")
+    names = [n.name for n in bn.nodes]
+    pin = [names.index(n) for n in ["Rb", "Cdc20", "CycD", "CycE"]]
+    cycle = next(att for att in bn._attractors if len(att) == 7)
+    return bn, pin, cycle
+
+
+def test_mammalian_cycle_ambiguous_pin_is_phase_locked():
+    """Mammalian Cell Cycle 2006, length-7 cycle pinned on
+    {Rb, Cdc20, CycD, CycE}: only 3 driver patterns over 7 phases, and
+    a repeated pattern has different successors. Pre-fix: 192 nodes,
+    every node with 2 out-edges, one 18-state attracting component, so
+    the strict check failed and the fraction was 0. Post-fix: 7 * 2^6
+    nodes with one out-edge each, a single attracting component equal
+    to the 7-node target, and every configuration reaches it."""
+    bn, pin, cycle = _mammalian_cycle_pin()
+    pcstg = bn.pinning_controlled_state_transition_graph(pin)[tuple(cycle)]
+
+    assert pcstg.graph["period"] == 7
+    assert pcstg.graph["phase_in_id"]
+    assert len(pcstg) == 7 * 2 ** (bn.Nnodes - len(pin))
+    assert set(dict(pcstg.out_degree()).values()) == {1}
+    assert len(pcstg.graph["target"]) == 7
+    assert {pcstg.nodes[n]["state"] for n in pcstg.graph["target"]} == set(cycle)
+    assert list(nx.attracting_components(pcstg)) == [pcstg.graph["target"]]
+
+    pcf = bn.fraction_pinned_configurations({tuple(cycle): pcstg})
+    assert pcf == [1.0]
+
+
+def test_fixed_point_and_distinct_pattern_ids_unchanged():
+    """Where the driver pattern determines the phase (fixed points,
+    cycles with distinct patterns, constant pins) node ids stay the
+    plain state numbers, as before the fix."""
+    BN = _build_two_fp_one_cycle()
+    for pin in ([A], [C], [A, B]):
+        for att, pcstg in BN.pinning_controlled_state_transition_graph(pin).items():
+            assert not pcstg.graph["phase_in_id"]
+            assert all(0 <= n < 2 ** BN.Nnodes for n in pcstg)
+            assert pcstg.graph["target"] == set(att)
+
+
+def test_constant_pin_on_cycle_has_period_one():
+    """Pin C on the length-2 cycle: C is constant around the cycle, so
+    the driver schedule has period 1 and both cycle states are in the
+    target whatever their phase."""
+    BN = _build_two_fp_one_cycle()
+    cyc = tuple(BN._attractors[_find_attractor(BN, [2, 4])])
+    pcstg = BN.pinning_controlled_state_transition_graph([C])[cyc]
+    assert pcstg.graph["period"] == 1
+    assert pcstg.graph["target"] == {2, 4}
+
+
+def test_minimal_period():
+    from cana.boolean_network import _minimal_period
+
+    assert _minimal_period(["a"]) == 1
+    assert _minimal_period(["a", "a", "a"]) == 1
+    assert _minimal_period(["a", "b", "a", "b"]) == 2
+    assert _minimal_period(["a", "b", "a", "c"]) == 4
+    assert _minimal_period(["a", "b", "c"]) == 3
+
+
+# ---------------------------------------------------------------- #
 # _signatures_distinguish_attractors — necessary-condition filter   #
 # ---------------------------------------------------------------- #
 
