@@ -445,6 +445,33 @@ def test_constant_pin_on_cycle_has_period_one():
     assert pcstg.graph["target"] == {2, 4}
 
 
+def test_pcf_zero_when_target_not_closed():
+    """A target that the pinned dynamics leaves is not pinned: the
+    fraction is 0, not the share of the target's own nodes."""
+    BN = _build_two_fp_one_cycle()
+    g = nx.DiGraph()
+    g.add_edges_from([(0, 1), (1, 1), (2, 1), (3, 1)])
+    g.graph["target"] = {0}
+    assert BN.fraction_pinned_configurations({(0,): g}) == [0]
+
+
+def test_pcstg_functional_with_constants():
+    """THALIANA keeps two constant nodes. Their bits are not
+    enumerated (``bin2num`` drops them), so every pcstg node has one
+    out-edge. Pre-fix, pinning {FUL, AP2, WUS, SEP} enumerated 2^11
+    states onto 512 ids and some nodes had two out-edges."""
+    from cana.datasets.bio import THALIANA
+
+    bn = THALIANA()
+    bn.attractors(mode="stg")
+    names = [n.name for n in bn.nodes]
+    pin = [names.index(n) for n in ["FUL", "AP2", "WUS", "SEP"]]
+    n_free = bn.Nnodes - len(pin) - len(bn.get_constants())
+    for att, pcstg in bn.pinning_controlled_state_transition_graph(pin).items():
+        assert len(pcstg) == 2 ** n_free
+        assert set(dict(pcstg.out_degree()).values()) == {1}
+
+
 def test_minimal_period():
     from cana.boolean_network import _minimal_period
 

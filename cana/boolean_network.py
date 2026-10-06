@@ -1298,7 +1298,9 @@ class BooleanNetwork:
         ``(t mod k, x)`` with ``x_D = a^t_D``, and every node has
         exactly one out-edge, to ``(t+1 mod k, x')`` where ``x'`` has
         its unpinned nodes updated from ``x`` and its drivers set to
-        ``a^{t+1}_D``. The pcstg has ``k * 2^(N - |D|)`` nodes.
+        ``a^{t+1}_D``. The pcstg has ``k * 2^F`` nodes, ``F`` the
+        number of free nodes: ``N - |D|``, less any constant nodes when
+        ``keep_constants`` is set (constants stay at their value).
 
         Earlier revisions keyed nodes by the state ``x`` alone. That is
         the same graph whenever the driver pattern determines the
@@ -1345,7 +1347,30 @@ class BooleanNetwork:
                         )
                     )
 
-        uncontrolled_system_size = self.Nnodes - len(driver_nodes)
+        # Free nodes are enumerated; drivers take the pin, and constants
+        # (with ``keep_constants``) stay at their value. Enumerating a
+        # constant's bit as free would create states that ``bin2num``
+        # (which drops constant bits) maps to one id, giving that node
+        # one out-edge per value of the constant.
+        driver_set = set(driver_nodes)
+        template = [None] * self.Nnodes
+        if self.keep_constants:
+            for i, node in enumerate(self.nodes):
+                if node.constant and i not in driver_set:
+                    template[i] = str(node.state)
+        free_nodes = [
+            i for i in range(self.Nnodes) if i not in driver_set and template[i] is None
+        ]
+
+        def free_states(pin):
+            """All states with the drivers at ``pin`` and constants fixed."""
+            state = list(template)
+            for dn, bit in zip(driver_nodes, pin):
+                state[dn] = bit
+            for bits in itertools.product("01", repeat=len(free_nodes)):
+                for i, bit in zip(free_nodes, bits):
+                    state[i] = bit
+                yield "".join(state)
 
         pcstg_dict = {}
         for att in self._attractors:
@@ -1376,12 +1401,7 @@ class BooleanNetwork:
             for phase, pin in enumerate(schedule):
                 next_phase = (phase + 1) % period
                 next_pin = schedule[next_phase]
-                for statenum in range(2**uncontrolled_system_size):
-                    initial = binstate_pinned_to_binstate(
-                        statenum_to_binstate(statenum, base=uncontrolled_system_size),
-                        pin,
-                        pinned_var=driver_nodes,
-                    )
+                for initial in free_states(pin):
                     # ``pinned_step`` advances the unpinned variables from
                     # ``initial`` (drivers at this phase's pattern) and
                     # writes the next phase's pattern at the drivers.
@@ -1616,10 +1636,12 @@ class BooleanNetwork:
         whose pinned trajectory reaches the target, i.e. the attractor
         with the drivers in phase (``pcstg.graph['target']``). Each
         phase of the driver schedule counts once: the denominator is
-        ``period * 2^(N - |D|)``.
+        ``period * 2^F`` (``F`` free nodes; constants excluded).
 
         Every pcstg node has one out-edge, so the nodes that reach the
-        target are the target's ancestors plus the target itself. (In
+        target are the target's ancestors plus the target itself. If
+        the target is not closed under the pinned dynamics the
+        fraction is 0. (In
         such a functional graph this is also the weakly connected
         component holding the target, which earlier revisions used.)
 
@@ -1632,7 +1654,12 @@ class BooleanNetwork:
         pinned_configurations = []
         for att, pcstg in pcstg_dict.items():
             target = _pcstg_target(pcstg, att)
-            if not target <= set(pcstg):
+            # The target must be closed under the pinned dynamics;
+            # otherwise the attractor does not survive the pinning and
+            # no configuration is pinned to it.
+            if not target <= set(pcstg) or any(
+                succ not in target for node in target for succ in pcstg.successors(node)
+            ):
                 pinned_configurations.append(0)
                 continue
             reaching = set(target)
