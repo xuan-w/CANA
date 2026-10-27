@@ -523,9 +523,13 @@ class BooleanNode(object):
             binstate (str) : the binary state
 
         Returns:
-            output (str) : the masked state
+            output (str) : the node's input values, in the order the node lists its
+                inputs (``self.inputs``), which is the order its LUT is written in.
         """
-        return "".join(compress(binstate, self.mask))
+        # Read in listed order, not network order: a mask over the network would
+        # reorder inputs that a node lists out of network order (e.g. Lac Operon),
+        # and step() would look up the wrong LUT row.
+        return "".join(binstate[i] for i in self.inputs)
 
     def activities(self):
         """compute the activities of each incoming edge of the node
