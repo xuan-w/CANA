@@ -80,3 +80,19 @@ def test_shuffled_input_order_gives_same_dynamics():
     for _ in range(2000):
         state = "".join(rng.choice("01") for _ in range(n))
         assert shuffled.step(state) == original.step(state)
+
+
+def test_lac_operon_step_matches_lut():
+    """Lac Operon, the one bundled model that lists inputs out of network order: on every one of
+    its 2^13 states, step() equals the LUT read with the inputs in listed order, and equals
+    pinned_step with no pins (which always read listed order)."""
+    from cana.datasets.bio import load_cell_collective_model
+
+    bn = load_cell_collective_model("Lac Operon")
+    assert any(list(nd.inputs) != sorted(nd.inputs) for nd in bn.nodes)   # the case the fix is for
+    for s in range(2 ** bn.Nnodes):
+        x = format(s, f"0{bn.Nnodes}b")
+        lut = "".join(nd.outputs[0] if not nd.inputs else nd.outputs[int("".join(x[i] for i in nd.inputs), 2)]
+                      for nd in bn.nodes)
+        assert bn.step(x) == lut
+        assert bn.pinned_step(x, pinned_binstate="", pinned_var=[]) == lut
