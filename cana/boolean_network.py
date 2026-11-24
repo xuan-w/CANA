@@ -572,12 +572,20 @@ class BooleanNetwork:
         return conditional_eg
 
     def update_biased_boolean_network(self):
-        for i, node in enumerate(self.nodes):
-            new_bias = node.bias_from_bias_input()
+        """One round of bias propagation, synchronous.
+
+        Every node's new output bias is computed from the input biases of the previous round,
+        and only then written to its targets' inputs. Before 2026-11-23 the new bias of node i
+        was written to its targets inside the loop, so nodes later in the list read this
+        round's values (a sequential update): the result after a few rounds depended on the
+        order of the nodes, e.g. bias-EG(1) differed between two copies of the same model
+        listed in different orders. The fixed point is the same either way.
+        """
+        new_bias = [node.bias_from_bias_input() for node in self.nodes]
+        for i, b in enumerate(new_bias):
             for target in self._sg[i]:
                 target_node = self.nodes[target]
-                target_idx = target_node.inputs.index(i)
-                target_node._input_bias[target_idx] = new_bias
+                target_node._input_bias[target_node.inputs.index(i)] = b
         for node in self.nodes:
             node.add_biased_input(None)
 

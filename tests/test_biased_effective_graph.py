@@ -21,7 +21,21 @@ def _edges(bn):
 
 
 def test_rounding_noise_edges_dropped_real_weights_kept(monkeypatch):
-    # seed 3 has bias-aware edges of weight 1.1e-16 and 2.2e-16 when no tolerance is applied
+    # Rounding noise is injected: with the synchronous bias update (2026-11-23) no seed tried
+    # (1-1500) still produces ~1e-16 weights on its own, so the tolerance is tested directly.
+    import cana.boolean_node as cbnode
+    orig = cbnode.BooleanNode.edge_effectiveness
+
+    def noisy(self, *args, **kwargs):
+        e = list(orig(self, *args, **kwargs))
+        if kwargs.get("biased"):
+            # on inputs with zero plain and zero biased effectiveness (edges absent from the plain
+            # EG, as in the original data case), put a float-rounding-sized weight
+            plain = orig(self, bound=kwargs.get("bound", "mean"))
+            e = [2.2e-16 if p == 0 and w == 0 else w for p, w in zip(plain, e)]
+        return e
+
+    monkeypatch.setattr(cbnode.BooleanNode, "edge_effectiveness", noisy)
     monkeypatch.setattr(cbn, "BIASED_EDGE_ZERO_TOL", 0.0)
     raw = _edges(_random_bn(3))
     noise = {e for e, w in raw.items() if 0 < w < 1e-12}
